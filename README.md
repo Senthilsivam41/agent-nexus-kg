@@ -22,26 +22,6 @@
 
 ## Architecture
 
-```text
-          Kinetic-V Agents / GraphRAG / Reasoning Layer
-                                │
-                    Semantic Graph API (REST / gRPC)
-                                │
-     Query Service (query planning, hop/fan-out limits, caching, auth)
-                                │
-                       GraphStore Interface
-                ┌───────────────┼───────────────┐
-                ▼               ▼               ▼
-        HugeGraph Adapter  JanusGraph Adapter  Neo4j Adapter
-         (Primary 10B+)     (Secondary 10B+)   (Small/Medium)
-                │               │               │
-         HugeGraph Server   JanusGraph +       Neo4j DB
-          + PD + HStore    ScyllaDB + OpenSearch
-                                │
-                                ▼  reference IDs / URIs
-        ────── Authoritative Data & Knowledge Stores ──────
-        Lakehouse │ Object Store │ Data Products │ Vector Store
-```
 <img width="1024" height="1024" alt="image" src="https://github.com/user-attachments/assets/171612d1-1628-475a-b945-596f9d459639" />
 
 
@@ -67,22 +47,8 @@ For full architectural specifications, ontology schemas, supernode mitigation st
 
 ## Planned Repository Structure
 
-```text
-agent-nexus-kg/
-├── docs/
-│   └── DESIGN.md                 # System design, schema, NFRs, and 24-week roadmap
-├── src/
-│   └── agent_nexus_kg/
-│       ├── api/                  # REST & gRPC Semantic Graph API endpoints
-│       ├── query/                # Query planner, hop/fan-out guards, supernode protection
-│       ├── store/                # GraphStore protocol & HugeGraph / JanusGraph / Neo4j adapters
-│       ├── ingestion/            # Bulk loaders & Kafka idempotent stream consumers
-│       └── graphrag/             # Entry-point discovery, context assembly, citation grounding
-├── deploy/
-│   └── k8s/                      # Helm charts & StatefulSet manifests for multi-AZ clusters
-├── benchmarks/                   # 100M / 1B / 10B edge traversal & ingestion harness
-└── tests/                        # Unit, contract, and adapter integration tests
-```
+<img width="1024" height="1024" alt="image" src="https://github.com/user-attachments/assets/29ea952f-a963-4c9f-b099-faba72cddae1" />
+
 
 ## Quickstart
 
