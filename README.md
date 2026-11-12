@@ -42,6 +42,8 @@
         ────── Authoritative Data & Knowledge Stores ──────
         Lakehouse │ Object Store │ Data Products │ Vector Store
 ```
+<img width="1024" height="1024" alt="image" src="https://github.com/user-attachments/assets/171612d1-1628-475a-b945-596f9d459639" />
+
 
 For full architectural specifications, ontology schemas, supernode mitigation strategies, and Kubernetes deployment topologies, see [`docs/DESIGN.md`](docs/DESIGN.md).
 
