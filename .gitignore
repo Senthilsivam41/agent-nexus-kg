@@ -13,3 +13,13 @@ build/
 .DS_Store
 data/
 artifacts/
+
+# Portfolio standard ignores
+.env
+.env.local
+.env.*.local
+node_modules/
+coverage/
+*.log
+.autoclaw/
+.codegraph/
