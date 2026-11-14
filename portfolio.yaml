@@ -1,0 +1,28 @@
+schemaVersion: portfolio.dev/v1
+kind: Product
+metadata:
+  id: scale-kg
+  name: Agent Nexus KG
+  description: Distributed, engine-agnostic semantic knowledge graph platform (100M–10B+ edges) with pluggable GraphStore adapters for multi-hop Kinetic-V GraphRAG.
+  stage: lab
+  owners:
+    - sendil
+spec:
+  standalone: true
+  category: retrieval
+  runtimes: {}
+  commands:
+    setup: make setup
+    demo: make demo
+    dev: make dev
+    check: make check
+  services: []
+  interfaces: {}
+  integrations:
+    consumes: []
+    produces: []
+  docs:
+    quickstart: docs/quickstart.md
+    architecture: docs/architecture.md
+    configuration: docs/configuration.md
+

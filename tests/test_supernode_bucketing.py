@@ -10,7 +10,9 @@ from scale_kg.core.supernode import (
 )
 
 
-def _node(node_id: str, domain: Domain = Domain.CUSTOMER, entity_type: str = "Customer") -> EntityNode:
+def _node(
+    node_id: str, domain: Domain = Domain.CUSTOMER, entity_type: str = "Customer"
+) -> EntityNode:
     return EntityNode(id=node_id, domain=domain, entity_type=entity_type)
 
 
@@ -35,7 +37,9 @@ class TestComputeBucketId:
         buckets = [compute_bucket_id(f"customer:org:{i}", 16) for i in range(200)]
         assert all(0 <= b < 16 for b in buckets)
         # Repeat calls must produce identical bucket IDs
-        buckets_repeat = [compute_bucket_id(f"customer:org:{i}", 16) for i in range(200)]
+        buckets_repeat = [
+            compute_bucket_id(f"customer:org:{i}", 16) for i in range(200)
+        ]
         assert buckets == buckets_repeat
         # Spread across buckets (not all collapsing to one bucket)
         assert len(set(buckets)) >= 12
@@ -112,7 +116,10 @@ class TestSupernodeBucketer:
     def test_auto_promotes_unseeded_node_exceeding_threshold(self) -> None:
         hot_product = _node("product:sku:viral", Domain.PRODUCT, "Product")
         buyers = [_node(f"customer:user:{i}") for i in range(12)]
-        edges = [_edge(b.id, hot_product.id, "PURCHASED", target_domain=Domain.PRODUCT) for b in buyers]
+        edges = [
+            _edge(b.id, hot_product.id, "PURCHASED", target_domain=Domain.PRODUCT)
+            for b in buyers
+        ]
 
         bucketer = SupernodeBucketer(degree_threshold=10, num_buckets=16)
         new_nodes, new_edges, supernode_ids = bucketer.transform_dataset(
@@ -130,7 +137,9 @@ class TestSupernodeBucketer:
     def test_rewrites_hub_to_hub_edges_through_both_buckets(self) -> None:
         hub_a = _node("technology:lang:python", Domain.TECHNOLOGY, "Language")
         hub_b = _node("customer:region:india", Domain.CUSTOMER, "Country")
-        edge = _edge(hub_a.id, hub_b.id, "POPULAR_IN", Domain.TECHNOLOGY, Domain.CUSTOMER)
+        edge = _edge(
+            hub_a.id, hub_b.id, "POPULAR_IN", Domain.TECHNOLOGY, Domain.CUSTOMER
+        )
 
         bucketer = SupernodeBucketer(degree_threshold=100, num_buckets=16)
         _, new_edges, supernode_ids = bucketer.transform_dataset([hub_a, hub_b], [edge])
@@ -151,11 +160,14 @@ class TestSupernodeBucketer:
         unrelated = _node("customer:org:other")
         buyers = [_node(f"customer:user:{i}") for i in range(6)]
         existing_edges = [
-            _edge(b.id, hub.id, "PURCHASED", target_domain=Domain.PRODUCT) for b in buyers
+            _edge(b.id, hub.id, "PURCHASED", target_domain=Domain.PRODUCT)
+            for b in buyers
         ] + [_edge(unrelated.id, "technology:db:pg", "USES")]
 
         bucketer = SupernodeBucketer(degree_threshold=5, num_buckets=16)
-        bucket_nodes, new_edges, removed_edges = bucketer.promote_node(hub, existing_edges)
+        bucket_nodes, new_edges, removed_edges = bucketer.promote_node(
+            hub, existing_edges
+        )
 
         assert len(bucket_nodes) == 16
         assert len(removed_edges) == 6
@@ -168,11 +180,14 @@ class TestSupernodeBucketer:
         assert all(bucketer.is_bucket_node_id(e.target_id) for e in rewritten_purchased)
 
     def test_unwrap_bucket_id_and_collapse_bucket_hops_for_3_hop_cap(self) -> None:
-        assert SupernodeBucketer.is_bucket_node_id("technology:lang:python::bucket::12") is True
-        assert SupernodeBucketer.is_bucket_node_id("technology:lang:python") is False
-        assert SupernodeBucketer.unwrap_bucket_id("technology:lang:python::bucket::12") == (
-            "technology:lang:python"
+        assert (
+            SupernodeBucketer.is_bucket_node_id("technology:lang:python::bucket::12")
+            is True
         )
+        assert SupernodeBucketer.is_bucket_node_id("technology:lang:python") is False
+        assert SupernodeBucketer.unwrap_bucket_id(
+            "technology:lang:python::bucket::12"
+        ) == ("technology:lang:python")
         assert SupernodeBucketer.unwrap_bucket_id("customer:org:1") == "customer:org:1"
 
         # 3 logical hops traversing through two supernode buckets (6 raw edges!)

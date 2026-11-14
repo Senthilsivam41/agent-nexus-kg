@@ -118,7 +118,10 @@ class TestLeanGraphWriteDiscipline:
         )
         with pytest.raises(GuardrailViolationError) as exc_info:
             enforcer.validate_node_write(doc_without_ref)
-        assert exc_info.value.violation.code == GuardrailViolationCode.LEAN_GRAPH_MISSING_LAKEHOUSE_REF
+        assert (
+            exc_info.value.violation.code
+            == GuardrailViolationCode.LEAN_GRAPH_MISSING_LAKEHOUSE_REF
+        )
 
         flagged_without_ref = EntityNode(
             id="product:item:42",
@@ -129,7 +132,10 @@ class TestLeanGraphWriteDiscipline:
         )
         with pytest.raises(GuardrailViolationError) as exc_info2:
             enforcer.validate_node_write(flagged_without_ref)
-        assert exc_info2.value.violation.code == GuardrailViolationCode.LEAN_GRAPH_MISSING_LAKEHOUSE_REF
+        assert (
+            exc_info2.value.violation.code
+            == GuardrailViolationCode.LEAN_GRAPH_MISSING_LAKEHOUSE_REF
+        )
 
         valid_doc = EntityNode(
             id="knowledge:doc:ok",
@@ -162,7 +168,10 @@ class TestLeanGraphWriteDiscipline:
         )
         with pytest.raises(GuardrailViolationError) as exc_info:
             enforcer.validate_edge_write(derived_unmaterialized)
-        assert exc_info.value.violation.code == GuardrailViolationCode.UNMATERIALIZED_DERIVED_EDGE
+        assert (
+            exc_info.value.violation.code
+            == GuardrailViolationCode.UNMATERIALIZED_DERIVED_EDGE
+        )
         assert exc_info.value.violation.phase == "write"
 
         # Even if caller omits is_derived=True on a known derived edge type
@@ -177,7 +186,10 @@ class TestLeanGraphWriteDiscipline:
         )
         with pytest.raises(GuardrailViolationError) as exc_info2:
             enforcer.validate_edge_write(implicit_derived)
-        assert exc_info2.value.violation.code == GuardrailViolationCode.UNMATERIALIZED_DERIVED_EDGE
+        assert (
+            exc_info2.value.violation.code
+            == GuardrailViolationCode.UNMATERIALIZED_DERIVED_EDGE
+        )
 
         # Materialized hot-path derived edges are allowed
         materialized = RelationshipEdge(
@@ -201,7 +213,10 @@ class TestLeanGraphWriteDiscipline:
         )
         with pytest.raises(GuardrailViolationError) as exc_info:
             enforcer.validate_edge_write(edge)
-        assert exc_info.value.violation.code == GuardrailViolationCode.LEAN_GRAPH_FORBIDDEN_PAYLOAD
+        assert (
+            exc_info.value.violation.code
+            == GuardrailViolationCode.LEAN_GRAPH_FORBIDDEN_PAYLOAD
+        )
 
 
 class TestPreFlightAndRuntimeGuardrails:
@@ -238,12 +253,20 @@ class TestPreFlightAndRuntimeGuardrails:
         ("field", "value", "expected_code"),
         [
             ("max_results", 5001, GuardrailViolationCode.MAX_RESULTS_EXCEEDED),
-            ("max_execution_seconds", 2.5, GuardrailViolationCode.MAX_EXECUTION_TIME_EXCEEDED),
-            ("max_expanded_nodes", 50001, GuardrailViolationCode.MAX_EXPANDED_NODES_EXCEEDED),
+            (
+                "max_execution_seconds",
+                2.5,
+                GuardrailViolationCode.MAX_EXECUTION_TIME_EXCEEDED,
+            ),
+            (
+                "max_expanded_nodes",
+                50001,
+                GuardrailViolationCode.MAX_EXPANDED_NODES_EXCEEDED,
+            ),
         ],
     )
     def test_preflight_rejects_budget_overrides_above_global_caps(
-        self, field: str, value: int | float, expected_code: GuardrailViolationCode
+        self, field: str, value: float, expected_code: GuardrailViolationCode
     ) -> None:
         enforcer = GuardrailEnforcer()
         req = TraversalRequest(seed_ids=["customer:org:1"], **{field: value})

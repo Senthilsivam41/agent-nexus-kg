@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from typing import Any
 
 import httpx
 import pytest
+from test_adapters_and_golden_queries import _HugeGraphMockTransport, _Neo4jMockDriver
 
 from scale_kg.adapters import (
     FaultMode,
@@ -27,10 +26,8 @@ from scale_kg.core import (
     GuardrailEnforcer,
     GuardrailViolationCode,
     RelationshipEdge,
-    SupernodeBucketer,
     TraversalRequest,
 )
-from test_adapters_and_golden_queries import _HugeGraphMockTransport, _Neo4jMockDriver
 
 
 class TestE21GraphStoreProtocolAndInMemory:
@@ -46,9 +43,15 @@ class TestE21GraphStoreProtocolAndInMemory:
     ) -> None:
         store = InMemoryGraphStore()
         nodes = [
-            EntityNode(id="customer:org:1", domain=Domain.CUSTOMER, entity_type="Organization"),
-            EntityNode(id="technology:db:pg", domain=Domain.TECHNOLOGY, entity_type="Database"),
-            EntityNode(id="product:app:crm", domain=Domain.PRODUCT, entity_type="Product"),
+            EntityNode(
+                id="customer:org:1", domain=Domain.CUSTOMER, entity_type="Organization"
+            ),
+            EntityNode(
+                id="technology:db:pg", domain=Domain.TECHNOLOGY, entity_type="Database"
+            ),
+            EntityNode(
+                id="product:app:crm", domain=Domain.PRODUCT, entity_type="Product"
+            ),
         ]
         await store.upsert_nodes(nodes)
         # Re-upsert updates domain cleanly without duplicating counts
@@ -110,12 +113,19 @@ class TestE21GraphStoreProtocolAndInMemory:
 
         # Derived materialized hot-path edge respected by include_derived flag
         res_no_derived = await store.traverse_k_hop(
-            TraversalRequest(seed_ids=["customer:org:1"], max_depth=1, include_derived=False)
+            TraversalRequest(
+                seed_ids=["customer:org:1"], max_depth=1, include_derived=False
+            )
         )
-        assert {n.id for n in res_no_derived.nodes} == {"customer:org:1", "technology:db:pg"}
+        assert {n.id for n in res_no_derived.nodes} == {
+            "customer:org:1",
+            "technology:db:pg",
+        }
 
         res_with_derived = await store.traverse_k_hop(
-            TraversalRequest(seed_ids=["customer:org:1"], max_depth=1, include_derived=True)
+            TraversalRequest(
+                seed_ids=["customer:org:1"], max_depth=1, include_derived=True
+            )
         )
         assert {n.id for n in res_with_derived.nodes} == {
             "customer:org:1",
@@ -131,9 +141,19 @@ class TestE21GraphStoreProtocolAndInMemory:
         enforcer = GuardrailEnforcer(clock=lambda: now[0])
         store = InMemoryGraphStore(enforcer=enforcer)
         nodes = [
-            EntityNode(id="customer:org:a", domain=Domain.CUSTOMER, entity_type="Organization"),
-            EntityNode(id="technology:lang:go", domain=Domain.TECHNOLOGY, entity_type="Language"),
-            EntityNode(id="technology:lang:rust", domain=Domain.TECHNOLOGY, entity_type="Language"),
+            EntityNode(
+                id="customer:org:a", domain=Domain.CUSTOMER, entity_type="Organization"
+            ),
+            EntityNode(
+                id="technology:lang:go",
+                domain=Domain.TECHNOLOGY,
+                entity_type="Language",
+            ),
+            EntityNode(
+                id="technology:lang:rust",
+                domain=Domain.TECHNOLOGY,
+                entity_type="Language",
+            ),
         ]
         edges = [
             RelationshipEdge(
@@ -181,14 +201,19 @@ class TestE21GraphStoreProtocolAndInMemory:
         )
         assert res_exp.metrics.aborted is True
         assert res_exp.metrics.violation is not None
-        assert res_exp.metrics.violation.code == GuardrailViolationCode.MAX_EXPANDED_NODES_EXCEEDED
+        assert (
+            res_exp.metrics.violation.code
+            == GuardrailViolationCode.MAX_EXPANDED_NODES_EXCEEDED
+        )
 
         # Runtime execution time abort via deterministic clock
         def _advancing_clock() -> float:
             now[0] += 0.2
             return now[0]
 
-        timed_store = InMemoryGraphStore(enforcer=GuardrailEnforcer(clock=_advancing_clock))
+        timed_store = InMemoryGraphStore(
+            enforcer=GuardrailEnforcer(clock=_advancing_clock)
+        )
         await timed_store.upsert_nodes(nodes)
         await timed_store.upsert_edges(edges)
         res_time = await timed_store.traverse_k_hop(
@@ -198,7 +223,10 @@ class TestE21GraphStoreProtocolAndInMemory:
         )
         assert res_time.metrics.aborted is True
         assert res_time.metrics.violation is not None
-        assert res_time.metrics.violation.code == GuardrailViolationCode.MAX_EXECUTION_TIME_EXCEEDED
+        assert (
+            res_time.metrics.violation.code
+            == GuardrailViolationCode.MAX_EXECUTION_TIME_EXCEEDED
+        )
 
 
 class TestE22IcebergPuppyGraphValidation:
@@ -211,8 +239,12 @@ class TestE22IcebergPuppyGraphValidation:
         warehouse = tmp_path / "iceberg"
         store1 = IcebergPuppyGraphStore(warehouse)
         nodes = [
-            EntityNode(id="customer:org:1", domain=Domain.CUSTOMER, entity_type="Organization"),
-            EntityNode(id="product:sku:1", domain=Domain.PRODUCT, entity_type="Product"),
+            EntityNode(
+                id="customer:org:1", domain=Domain.CUSTOMER, entity_type="Organization"
+            ),
+            EntityNode(
+                id="product:sku:1", domain=Domain.PRODUCT, entity_type="Product"
+            ),
         ]
         edges = [
             RelationshipEdge(
@@ -241,13 +273,17 @@ class TestE22IcebergPuppyGraphValidation:
 
         # Query builders respect guardrail ceilings
         cypher, c_params = store2.build_cypher_query(
-            TraversalRequest(seed_ids=["customer:org:1"], max_depth=9, max_results=99999)
+            TraversalRequest(
+                seed_ids=["customer:org:1"], max_depth=9, max_results=99999
+            )
         )
         assert "*1..3" in cypher and "LIMIT 5000" in cypher
         assert c_params["max_depth"] == 3 and c_params["limit"] == 5000
 
         gremlin, g_params = store2.build_gremlin_query(
-            TraversalRequest(seed_ids=["customer:org:1"], max_depth=5, max_results=99999)
+            TraversalRequest(
+                seed_ids=["customer:org:1"], max_depth=5, max_results=99999
+            )
         )
         assert ".times(3)" in gremlin and ".limit(5000)" in gremlin
         assert g_params["limit"] == 5000
@@ -255,7 +291,9 @@ class TestE22IcebergPuppyGraphValidation:
     @pytest.mark.asyncio
     async def test_remote_puppygraph_error_handling(self, tmp_path: Path) -> None:
         class _FailingTransport(httpx.AsyncBaseTransport):
-            async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            async def handle_async_request(
+                self, request: httpx.Request
+            ) -> httpx.Response:
                 return httpx.Response(503, json={"error": "engine busy"})
 
         store = IcebergPuppyGraphStore(
@@ -282,7 +320,9 @@ class TestE23HugeGraphValidation:
             def __init__(self, mode: str) -> None:
                 self.mode = mode
 
-            async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            async def handle_async_request(
+                self, request: httpx.Request
+            ) -> httpx.Response:
                 if self.mode == "timeout":
                     raise httpx.ReadTimeout("timed out", request=request)
                 if self.mode == "error":
@@ -294,9 +334,22 @@ class TestE23HugeGraphValidation:
                         200,
                         json={
                             "vertices": [
-                                {"id": "customer:org:1", "domain": "customer", "entity_type": "Organization"},
-                                {"id": "technology:lang:python::bucket::3", "domain": "technology", "entity_type": "LanguageBucket", "is_bucket": True},
-                                {"id": "technology:lang:python", "domain": "technology", "entity_type": "Language"},
+                                {
+                                    "id": "customer:org:1",
+                                    "domain": "customer",
+                                    "entity_type": "Organization",
+                                },
+                                {
+                                    "id": "technology:lang:python::bucket::3",
+                                    "domain": "technology",
+                                    "entity_type": "LanguageBucket",
+                                    "is_bucket": True,
+                                },
+                                {
+                                    "id": "technology:lang:python",
+                                    "domain": "technology",
+                                    "entity_type": "Language",
+                                },
                             ],
                             "edges": [
                                 {
@@ -335,11 +388,15 @@ class TestE23HugeGraphValidation:
         assert res.paths == [["customer:org:1", "technology:lang:python"]]
         assert res.metrics.bucket_hops_unwrapped == 1
 
-        err_store = HugeGraphStore("http://hg.mock", transport=_EdgeCaseTransport("error"))
+        err_store = HugeGraphStore(
+            "http://hg.mock", transport=_EdgeCaseTransport("error")
+        )
         with pytest.raises(GraphStoreError):
             await err_store.get_node("customer:org:1")
 
-        to_store = HugeGraphStore("http://hg.mock", transport=_EdgeCaseTransport("timeout"))
+        to_store = HugeGraphStore(
+            "http://hg.mock", transport=_EdgeCaseTransport("timeout")
+        )
         with pytest.raises(TimeoutError):
             await to_store.get_node("customer:org:1")
 
@@ -366,7 +423,9 @@ class TestE24Neo4jAndStubsValidation:
         assert proxy.target_domain == Domain.PRODUCT
 
         cypher, params = store_no_driver.build_k_hop_cypher(
-            TraversalRequest(seed_ids=["customer:org:1"], max_depth=2, edge_types=["USES"])
+            TraversalRequest(
+                seed_ids=["customer:org:1"], max_depth=2, edge_types=["USES"]
+            )
         )
         assert "r:REL*1..2" in cypher and "LIMIT 5000" in cypher
         assert params["edge_types"] == ["USES"]
@@ -380,9 +439,19 @@ class TestE2EndToEndParityAcrossAllAdapters:
         self, tmp_path: Path
     ) -> None:
         nodes = [
-            EntityNode(id="customer:org:alpha", domain=Domain.CUSTOMER, entity_type="Organization"),
-            EntityNode(id="technology:lang:python", domain=Domain.TECHNOLOGY, entity_type="Language"),
-            EntityNode(id="product:sdk:core", domain=Domain.PRODUCT, entity_type="Product"),
+            EntityNode(
+                id="customer:org:alpha",
+                domain=Domain.CUSTOMER,
+                entity_type="Organization",
+            ),
+            EntityNode(
+                id="technology:lang:python",
+                domain=Domain.TECHNOLOGY,
+                entity_type="Language",
+            ),
+            EntityNode(
+                id="product:sdk:core", domain=Domain.PRODUCT, entity_type="Product"
+            ),
             EntityNode(
                 id="knowledge:doc:spec",
                 domain=Domain.KNOWLEDGE,

@@ -301,7 +301,9 @@ class IcebergPuppyGraphStore(GraphStore):
             routing_props=json.loads(row["routing_props_json"] or "{}"),
             lakehouse_ref=row["lakehouse_ref"],
             is_proxy=bool(row["is_proxy"]),
-            target_domain=Domain(row["target_domain"]) if row["target_domain"] else None,
+            target_domain=Domain(row["target_domain"])
+            if row["target_domain"]
+            else None,
             is_bucket=bool(row["is_bucket"]),
         )
 
@@ -329,7 +331,9 @@ class IcebergPuppyGraphStore(GraphStore):
             target_id=row["target_id"],
             edge_type=row["edge_type"],
             domain=Domain(row["domain"]),
-            target_domain=Domain(row["target_domain"]) if row["target_domain"] else None,
+            target_domain=Domain(row["target_domain"])
+            if row["target_domain"]
+            else None,
             is_derived=bool(row["is_derived"]),
             materialized_hot_path=bool(row["materialized_hot_path"]),
             routing_props=json.loads(row["routing_props_json"] or "{}"),
@@ -382,7 +386,9 @@ class IcebergPuppyGraphStore(GraphStore):
     async def upsert_edges(self, edges: list[RelationshipEdge]) -> int:
         for edge in edges:
             self._enforcer.validate_edge_write(edge)
-        grouped: dict[tuple[Domain, int], dict[tuple[str, str, str], RelationshipEdge]] = {}
+        grouped: dict[
+            tuple[Domain, int], dict[tuple[str, str, str], RelationshipEdge]
+        ] = {}
         for edge in edges:
             self._fault.check(edge.domain)
             src_bucket = compute_bucket_id(edge.source_id, self._num_buckets)
@@ -462,13 +468,13 @@ class IcebergPuppyGraphStore(GraphStore):
                 edges.append(self._row_to_edge(row))
         return edges
 
-    def build_cypher_query(self, request: TraversalRequest) -> tuple[str, dict[str, Any]]:
+    def build_cypher_query(
+        self, request: TraversalRequest
+    ) -> tuple[str, dict[str, Any]]:
         """Build a bounded OpenCypher query for PuppyGraph."""
         depth = min(request.max_depth, self._enforcer.config.max_depth)
         limit = min(request.max_results, self._enforcer.config.max_results)
-        rel_filter = (
-            ":" + "|".join(request.edge_types) if request.edge_types else ""
-        )
+        rel_filter = ":" + "|".join(request.edge_types) if request.edge_types else ""
         domain_clause = (
             " AND ALL(n IN nodes(p) WHERE n.domain IN $domains)"
             if request.domains
@@ -492,11 +498,17 @@ class IcebergPuppyGraphStore(GraphStore):
         }
         return cypher, params
 
-    def build_gremlin_query(self, request: TraversalRequest) -> tuple[str, dict[str, Any]]:
+    def build_gremlin_query(
+        self, request: TraversalRequest
+    ) -> tuple[str, dict[str, Any]]:
         """Build a bounded Gremlin query for PuppyGraph."""
         depth = min(request.max_depth, self._enforcer.config.max_depth)
         limit = min(request.max_results, self._enforcer.config.max_results)
-        edge_arg = ", ".join(f"'{et}'" for et in request.edge_types) if request.edge_types else ""
+        edge_arg = (
+            ", ".join(f"'{et}'" for et in request.edge_types)
+            if request.edge_types
+            else ""
+        )
         gremlin = (
             "g.V().has('id', within(seed_ids))"
             f".repeat(outE({edge_arg}).inV()).times({depth}).emit()"
@@ -509,14 +521,18 @@ class IcebergPuppyGraphStore(GraphStore):
         }
         return gremlin, bindings
 
-    async def _post_puppygraph(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _post_puppygraph(
+        self, path: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
         if not self.puppygraph_url:
             raise GraphStoreError("puppygraph_url is not configured.")
         url = f"{self.puppygraph_url}{path}"
         if self._external_client is not None:
             resp = await self._external_client.post(url, json=payload)
         else:
-            async with httpx.AsyncClient(transport=self._transport, timeout=5.0) as client:
+            async with httpx.AsyncClient(
+                transport=self._transport, timeout=5.0
+            ) as client:
                 resp = await client.post(url, json=payload)
         if resp.status_code >= 400:
             raise GraphStoreError(
@@ -649,7 +665,11 @@ class IcebergPuppyGraphStore(GraphStore):
                 "/cypher", {"query": query, "parameters": params}
             )
 
-        nodes = [EntityNode.model_validate(n) for n in data.get("nodes", []) if not n.get("is_bucket")]
+        nodes = [
+            EntityNode.model_validate(n)
+            for n in data.get("nodes", [])
+            if not n.get("is_bucket")
+        ]
         edges = [RelationshipEdge.model_validate(e) for e in data.get("edges", [])]
         raw_paths: list[list[str]] = data.get("paths", [])
 
@@ -668,9 +688,7 @@ class IcebergPuppyGraphStore(GraphStore):
             for e in edges
             if e.target_domain is not None and e.target_domain != e.domain
         )
-        locality = (
-            round((len(edges) - cross_domain) / len(edges), 4) if edges else 1.0
-        )
+        locality = round((len(edges) - cross_domain) / len(edges), 4) if edges else 1.0
         elapsed_ms = round((time.monotonic() - started) * 1000.0, 3)
 
         return TraversalResult(
@@ -685,7 +703,9 @@ class IcebergPuppyGraphStore(GraphStore):
                 execution_time_ms=elapsed_ms,
                 cross_domain_hops=cross_domain,
                 single_domain_locality_ratio=locality,
-                bucket_hops_unwrapped=data.get("bucket_hops_unwrapped", unwrapped_total),
+                bucket_hops_unwrapped=data.get(
+                    "bucket_hops_unwrapped", unwrapped_total
+                ),
                 aborted=False,
                 violation=None,
             ),
@@ -712,7 +732,9 @@ class IcebergPuppyGraphStore(GraphStore):
         if self.puppygraph_url and healthy:
             try:
                 if self._external_client is not None:
-                    resp = await self._external_client.get(f"{self.puppygraph_url}/health")
+                    resp = await self._external_client.get(
+                        f"{self.puppygraph_url}/health"
+                    )
                 else:
                     async with httpx.AsyncClient(
                         transport=self._transport, timeout=2.0
@@ -748,7 +770,9 @@ class IcebergPuppyGraphStore(GraphStore):
         for pf in node_files:
             table = pq.read_table(pf, columns=["domain", "is_bucket", "is_proxy"])
             for row in table.to_pylist():
-                nodes_by_domain[row["domain"]] = nodes_by_domain.get(row["domain"], 0) + 1
+                nodes_by_domain[row["domain"]] = (
+                    nodes_by_domain.get(row["domain"], 0) + 1
+                )
                 if row["is_bucket"]:
                     bucket_nodes += 1
                 if row["is_proxy"]:
@@ -758,7 +782,9 @@ class IcebergPuppyGraphStore(GraphStore):
         for pf in edge_files:
             table = pq.read_table(pf, columns=["domain"])
             for row in table.to_pylist():
-                edges_by_domain[row["domain"]] = edges_by_domain.get(row["domain"], 0) + 1
+                edges_by_domain[row["domain"]] = (
+                    edges_by_domain.get(row["domain"], 0) + 1
+                )
 
         cum = self.cumulative_scan_stats
         return GraphStats(

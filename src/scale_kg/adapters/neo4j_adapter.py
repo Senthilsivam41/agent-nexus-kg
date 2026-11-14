@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Any, Literal, Protocol
+from types import TracebackType
+from typing import Any, Literal, Protocol, Self
 
 from scale_kg.adapters.base import (
     AdapterCostProfile,
@@ -42,9 +43,14 @@ class AsyncCypherSession(Protocol):
         self, query: str, parameters: dict[str, Any] | None = None
     ) -> AsyncCypherResult: ...
 
-    async def __aenter__(self) -> AsyncCypherSession: ...
+    async def __aenter__(self) -> Self: ...
 
-    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None: ...
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None: ...
 
 
 class AsyncCypherDriver(Protocol):
@@ -189,7 +195,9 @@ class Neo4jGraphStore(GraphStore):
         self, request: TraversalRequest, *, max_depth_override: int | None = None
     ) -> tuple[str, dict[str, Any]]:
         """Build a bounded parameterized Cypher k-hop traversal query."""
-        depth = max_depth_override or min(request.max_depth, self._enforcer.config.max_depth)
+        depth = max_depth_override or min(
+            request.max_depth, self._enforcer.config.max_depth
+        )
         limit = min(request.max_results, self._enforcer.config.max_results)
         cypher = (
             f"MATCH p = (s:Entity)-[r:REL*1..{depth}]->(t:Entity) "
@@ -318,7 +326,9 @@ class Neo4jGraphStore(GraphStore):
         edges_by_domain: dict[Domain, list[dict[str, Any]]] = {}
 
         for edge in edges:
-            edges_by_domain.setdefault(edge.domain, []).append(self._serialize_edge(edge))
+            edges_by_domain.setdefault(edge.domain, []).append(
+                self._serialize_edge(edge)
+            )
             if edge.target_domain is not None and edge.target_domain != edge.domain:
                 proxy = self.create_proxy_node(
                     edge.target_id,
@@ -342,7 +352,9 @@ class Neo4jGraphStore(GraphStore):
 
     async def get_node(self, node_id: str) -> EntityNode | None:
         hint = canonical_domain_from_id(node_id)
-        domains_to_query = [hint, *(d for d in Domain if d != hint)] if hint else list(Domain)
+        domains_to_query = (
+            [hint, *(d for d in Domain if d != hint)] if hint else list(Domain)
+        )
         query = (
             "MATCH (n:Entity {id: $id}) "
             "WHERE coalesce(n.is_proxy, false) = false "
@@ -467,8 +479,12 @@ class Neo4jGraphStore(GraphStore):
                         continue
                     unwrapped = edge.model_copy(
                         update={
-                            "source_id": SupernodeBucketer.unwrap_bucket_id(edge.source_id),
-                            "target_id": SupernodeBucketer.unwrap_bucket_id(edge.target_id),
+                            "source_id": SupernodeBucketer.unwrap_bucket_id(
+                                edge.source_id
+                            ),
+                            "target_id": SupernodeBucketer.unwrap_bucket_id(
+                                edge.target_id
+                            ),
                         }
                     )
                     collected_edges.setdefault(
@@ -511,7 +527,8 @@ class Neo4jGraphStore(GraphStore):
                     )
                     locality = (
                         round(
-                            (len(collected_edges) - cross_domain) / len(collected_edges),
+                            (len(collected_edges) - cross_domain)
+                            / len(collected_edges),
                             4,
                         )
                         if collected_edges
@@ -580,7 +597,7 @@ class Neo4jGraphStore(GraphStore):
         if healthy and self._driver is not None:
             try:
                 await self._driver.verify_connectivity()
-            except Exception:
+            except Exception:  # noqa: BLE001 — any driver failure marks the adapter unavailable
                 healthy = False
                 status = "unavailable"
         return HealthStatus(
