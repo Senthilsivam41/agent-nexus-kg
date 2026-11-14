@@ -50,7 +50,8 @@ async def resolve_logical_neighbors(
     candidate_ids = [node_id]
     if not SupernodeBucketer.is_bucket_node_id(node_id):
         candidate_ids.extend(
-            SupernodeBucketer.make_bucket_node_id(node_id, b) for b in range(num_buckets)
+            SupernodeBucketer.make_bucket_node_id(node_id, b)
+            for b in range(num_buckets)
         )
 
     results: list[tuple[RelationshipEdge, EntityNode]] = []
@@ -61,7 +62,9 @@ async def resolve_logical_neighbors(
         *,
         is_outbound: bool,
     ) -> None:
-        for edge in sorted(edges, key=lambda e: (e.edge_type, e.source_id, e.target_id)):
+        for edge in sorted(
+            edges, key=lambda e: (e.edge_type, e.source_id, e.target_id)
+        ):
             if edge.edge_type == BUCKET_EDGE_TYPE:
                 continue
             if allowed_edge_types and edge.edge_type not in allowed_edge_types:

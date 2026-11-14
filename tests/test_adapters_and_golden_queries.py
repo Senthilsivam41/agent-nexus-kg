@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
-from typing import Any
+from types import TracebackType
+from typing import Any, Self
 from urllib.parse import unquote
 
 import httpx
@@ -36,16 +36,26 @@ from scale_kg.core import (
 
 def _sample_graph() -> tuple[list[EntityNode], list[RelationshipEdge]]:
     nodes = [
-        EntityNode(id="customer:org:acme", domain=Domain.CUSTOMER, entity_type="Organization"),
-        EntityNode(id="technology:lang:python", domain=Domain.TECHNOLOGY, entity_type="Language"),
-        EntityNode(id="product:sdk:kinetic", domain=Domain.PRODUCT, entity_type="Product"),
+        EntityNode(
+            id="customer:org:acme", domain=Domain.CUSTOMER, entity_type="Organization"
+        ),
+        EntityNode(
+            id="technology:lang:python",
+            domain=Domain.TECHNOLOGY,
+            entity_type="Language",
+        ),
+        EntityNode(
+            id="product:sdk:kinetic", domain=Domain.PRODUCT, entity_type="Product"
+        ),
         EntityNode(
             id="knowledge:doc:arch",
             domain=Domain.KNOWLEDGE,
             entity_type="Document",
             lakehouse_ref="s3://lakehouse/knowledge/arch.parquet",
         ),
-        EntityNode(id="customer:org:beta", domain=Domain.CUSTOMER, entity_type="Organization"),
+        EntityNode(
+            id="customer:org:beta", domain=Domain.CUSTOMER, entity_type="Organization"
+        ),
     ]
     edges = [
         RelationshipEdge(
@@ -120,7 +130,11 @@ class _HugeGraphMockTransport(httpx.AsyncBaseTransport):
             vid = q["vertex_id"]
             direction = q.get("direction", "OUT").lower()
             edge_types = q["labels"].split(",") if q.get("labels") else None
-            domains = [Domain(d) for d in q["domains"].split(",")] if q.get("domains") else None
+            domains = (
+                [Domain(d) for d in q["domains"].split(",")]
+                if q.get("domains")
+                else None
+            )
             limit = int(q.get("limit", "5000"))
             neighbors = await self.backing.get_neighbors(
                 vid,
@@ -137,30 +151,40 @@ class _HugeGraphMockTransport(httpx.AsyncBaseTransport):
                 },
             )
 
-        if method == "POST" and (
-            path.endswith("/gremlin")
-            or path.endswith("/cypher")
-            or path.endswith("/traversers/kneighbor")
+        if method == "POST" and path.endswith(
+            ("/gremlin", "/cypher", "/traversers/kneighbor")
         ):
             if path.endswith("/gremlin"):
                 params = body["bindings"]
                 seed_ids = params["seed_ids"]
                 depth = params["max_depth"]
                 limit = params["limit"]
-                domains = [Domain(d) for d in params["domains"]] if params.get("domains") else None
+                domains = (
+                    [Domain(d) for d in params["domains"]]
+                    if params.get("domains")
+                    else None
+                )
                 edge_types = None
             elif path.endswith("/cypher"):
                 params = body["parameters"]
                 seed_ids = params["seed_ids"]
                 depth = params["max_depth"]
                 limit = params["limit"]
-                domains = [Domain(d) for d in params["domains"]] if params.get("domains") else None
+                domains = (
+                    [Domain(d) for d in params["domains"]]
+                    if params.get("domains")
+                    else None
+                )
                 edge_types = None
             else:
                 seed_ids = body["sources"]["ids"]
                 depth = body["max_depth"]
                 limit = body["limit"]
-                domains = [Domain(d) for d in body["domains"]] if body.get("domains") else None
+                domains = (
+                    [Domain(d) for d in body["domains"]]
+                    if body.get("domains")
+                    else None
+                )
                 edge_types = body["steps"]["labels"] or None
 
             res = await self.backing.traverse_k_hop(
@@ -190,7 +214,9 @@ class _HugeGraphMockTransport(httpx.AsyncBaseTransport):
             await self.backing.clear()
             return httpx.Response(200, json={"cleared": True})
 
-        return httpx.Response(404, json={"error": f"Unhandled mock route {method} {path}"})
+        return httpx.Response(
+            404, json={"error": f"Unhandled mock route {method} {path}"}
+        )
 
 
 class _Neo4jMockResult:
@@ -202,14 +228,21 @@ class _Neo4jMockResult:
 
 
 class _Neo4jMockSession:
-    def __init__(self, shard_store: InMemoryGraphStore, log: list[tuple[str, str]]) -> None:
+    def __init__(
+        self, shard_store: InMemoryGraphStore, log: list[tuple[str, str]]
+    ) -> None:
         self._store = shard_store
         self._log = log
 
-    async def __aenter__(self) -> _Neo4jMockSession:
+    async def __aenter__(self) -> Self:
         return self
 
-    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
         return None
 
     async def run(
@@ -241,7 +274,9 @@ class _Neo4jMockSession:
             elif "<-[r:REL]-" in query:
                 direction = "in"
             edge_types = params["edge_types"] or None
-            domains = [Domain(d) for d in params["domains"]] if params["domains"] else None
+            domains = (
+                [Domain(d) for d in params["domains"]] if params["domains"] else None
+            )
             neighbors = await self._store.get_neighbors(
                 params["node_id"],
                 edge_types=edge_types,
@@ -261,7 +296,9 @@ class _Neo4jMockSession:
         if "MATCH p = (s:Entity)-[r:REL*1.." in query:
             depth = int(query.split("*1..", 1)[1].split("]", 1)[0])
             edge_types = params["edge_types"] or None
-            domains = [Domain(d) for d in params["domains"]] if params["domains"] else None
+            domains = (
+                [Domain(d) for d in params["domains"]] if params["domains"] else None
+            )
             res = await self._store.traverse_k_hop(
                 TraversalRequest(
                     seed_ids=params["seed_ids"],
@@ -292,8 +329,12 @@ class _Neo4jMockSession:
             if not rows:
                 rows.append(
                     {
-                        "nodes": [Neo4jGraphStore._serialize_node(n) for n in res.nodes],
-                        "edges": [Neo4jGraphStore._serialize_edge(e) for e in res.edges],
+                        "nodes": [
+                            Neo4jGraphStore._serialize_node(n) for n in res.nodes
+                        ],
+                        "edges": [
+                            Neo4jGraphStore._serialize_edge(e) for e in res.edges
+                        ],
                         "path": [n.id for n in res.nodes],
                     }
                 )
@@ -448,7 +489,10 @@ class TestSharedGraphStoreContract:
         )
         with pytest.raises(GuardrailViolationError) as exc_node:
             await store.upsert_nodes([bad_node])
-        assert exc_node.value.violation.code == GuardrailViolationCode.LEAN_GRAPH_FORBIDDEN_PAYLOAD
+        assert (
+            exc_node.value.violation.code
+            == GuardrailViolationCode.LEAN_GRAPH_FORBIDDEN_PAYLOAD
+        )
 
         bad_edge = RelationshipEdge(
             source_id="customer:org:acme",
@@ -460,20 +504,31 @@ class TestSharedGraphStoreContract:
         )
         with pytest.raises(GuardrailViolationError) as exc_edge:
             await store.upsert_edges([bad_edge])
-        assert exc_edge.value.violation.code == GuardrailViolationCode.UNMATERIALIZED_DERIVED_EDGE
+        assert (
+            exc_edge.value.violation.code
+            == GuardrailViolationCode.UNMATERIALIZED_DERIVED_EDGE
+        )
 
         with pytest.raises(GuardrailViolationError) as exc_depth:
             await store.traverse_k_hop(
                 TraversalRequest(seed_ids=["customer:org:acme"], max_depth=4)
             )
-        assert exc_depth.value.violation.code == GuardrailViolationCode.MAX_DEPTH_EXCEEDED
+        assert (
+            exc_depth.value.violation.code == GuardrailViolationCode.MAX_DEPTH_EXCEEDED
+        )
 
     async def test_fault_mode_injection_and_recovery(
         self, adapter_kind: str, tmp_path: Path
     ) -> None:
         store = _build_adapter(adapter_kind, tmp_path)
         await store.upsert_nodes(
-            [EntityNode(id="customer:org:1", domain=Domain.CUSTOMER, entity_type="Organization")]
+            [
+                EntityNode(
+                    id="customer:org:1",
+                    domain=Domain.CUSTOMER,
+                    entity_type="Organization",
+                )
+            ]
         )
 
         await store.set_fault_mode(FaultMode.NODE_DOWN, target_domain=Domain.CUSTOMER)
@@ -514,7 +569,9 @@ class TestInMemoryAdapterSpecifics:
         assert [(e.edge_type, n.id) for e, n in out_acme] == [
             ("USES", "technology:lang:python")
         ]
-        out_python = await store.get_neighbors("technology:lang:python", direction="out")
+        out_python = await store.get_neighbors(
+            "technology:lang:python", direction="out"
+        )
         assert [(e.edge_type, n.id) for e, n in out_python] == [
             ("POWERS", "product:sdk:kinetic")
         ]
@@ -591,7 +648,9 @@ class TestHugeGraphAdapterSpecifics:
         elif query_mode == "opencypher":
             assert any(p.endswith("/cypher") for p in transport.recorded_paths)
         else:
-            assert any(p.endswith("/traversers/kneighbor") for p in transport.recorded_paths)
+            assert any(
+                p.endswith("/traversers/kneighbor") for p in transport.recorded_paths
+            )
 
 
 @pytest.mark.asyncio
@@ -606,7 +665,12 @@ class TestNeo4jAndStubsSpecifics:
         # Proxy node for technology:lang:python was materialized inside customer shard
         customer_stats = await driver.shards["kg_customer"].count_stats()
         assert customer_stats.proxy_node_count == 1
-        assert driver.shards["kg_customer"]._nodes[Domain.CUSTOMER]["technology:lang:python"].is_proxy is True
+        assert (
+            driver.shards["kg_customer"]
+            ._nodes[Domain.CUSTOMER]["technology:lang:python"]
+            .is_proxy
+            is True
+        )
 
         # Cross-shard traversal follows proxy nodes from customer -> technology -> product -> knowledge
         res = await store.traverse_k_hop(
@@ -631,7 +695,9 @@ class TestNeo4jAndStubsSpecifics:
         assert janus.cost_profile().tier == "tier2"
         assert "ScyllaDB" in janus.cost_profile().storage_backend
         gremlin, g_bindings = janus.build_gremlin_query(
-            TraversalRequest(seed_ids=["customer:org:1"], max_depth=2, edge_types=["USES"])
+            TraversalRequest(
+                seed_ids=["customer:org:1"], max_depth=2, edge_types=["USES"]
+            )
         )
         assert ".times(2)" in gremlin and ".limit(5000)" in gremlin
         assert g_bindings["seed_ids"] == ["customer:org:1"]
@@ -639,7 +705,9 @@ class TestNeo4jAndStubsSpecifics:
         assert nebula.cost_profile().is_stub is True
         assert nebula.cost_profile().tier == "tier2"
         ngql, n_params = nebula.build_ngql_query(
-            TraversalRequest(seed_ids=["customer:org:1"], max_depth=3, edge_types=["USES"])
+            TraversalRequest(
+                seed_ids=["customer:org:1"], max_depth=3, edge_types=["USES"]
+            )
         )
         assert "GO 1 TO 3 STEPS" in ngql and "LIMIT 5000" in ngql
         assert n_params["space"] == "scale_kg"

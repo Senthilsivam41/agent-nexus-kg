@@ -52,7 +52,10 @@ class SupernodeRegistry:
             return False
         if node_id in self.seeded_ids or node_id in self.promoted_ids:
             return True
-        if isinstance(node, EntityNode) and node.entity_type.lower() in self.seeded_types:
+        if (
+            isinstance(node, EntityNode)
+            and node.entity_type.lower() in self.seeded_types
+        ):
             return True
         return degree is not None and degree >= self.degree_threshold
 
@@ -178,13 +181,11 @@ class SupernodeBucketer:
         if edge.edge_type == BUCKET_EDGE_TYPE:
             return edge
 
-        src_super = (
-            edge.source_id in supernode_ids
-            and not self.is_bucket_node_id(edge.source_id)
+        src_super = edge.source_id in supernode_ids and not self.is_bucket_node_id(
+            edge.source_id
         )
-        dst_super = (
-            edge.target_id in supernode_ids
-            and not self.is_bucket_node_id(edge.target_id)
+        dst_super = edge.target_id in supernode_ids and not self.is_bucket_node_id(
+            edge.target_id
         )
         if not src_super and not dst_super:
             return edge

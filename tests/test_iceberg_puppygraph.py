@@ -23,8 +23,14 @@ from scale_kg.core import (
 
 def _build_multi_bucket_dataset() -> tuple[list[EntityNode], list[RelationshipEdge]]:
     nodes: list[EntityNode] = [
-        EntityNode(id="technology:lang:python", domain=Domain.TECHNOLOGY, entity_type="Language"),
-        EntityNode(id="product:sdk:kinetic", domain=Domain.PRODUCT, entity_type="Product"),
+        EntityNode(
+            id="technology:lang:python",
+            domain=Domain.TECHNOLOGY,
+            entity_type="Language",
+        ),
+        EntityNode(
+            id="product:sdk:kinetic", domain=Domain.PRODUCT, entity_type="Product"
+        ),
         EntityNode(
             id="knowledge:doc:guide",
             domain=Domain.KNOWLEDGE,
@@ -153,7 +159,10 @@ class TestIcebergPuppyGraphStore:
         }
         assert sorted(ice_res.paths) == sorted(mem_res.paths)
         assert ice_res.metrics.depth_reached == mem_res.metrics.depth_reached == 3
-        assert ice_res.metrics.bucket_hops_unwrapped == mem_res.metrics.bucket_hops_unwrapped
+        assert (
+            ice_res.metrics.bucket_hops_unwrapped
+            == mem_res.metrics.bucket_hops_unwrapped
+        )
 
     @pytest.mark.parametrize("protocol", ["cypher", "gremlin"])
     async def test_delegates_to_remote_puppygraph_endpoint_when_configured(
@@ -162,7 +171,9 @@ class TestIcebergPuppyGraphStore:
         captured: list[tuple[str, dict[str, Any]]] = []
 
         class _MockPuppyGraphTransport(httpx.AsyncBaseTransport):
-            async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            async def handle_async_request(
+                self, request: httpx.Request
+            ) -> httpx.Response:
                 if request.method == "GET" and request.url.path == "/health":
                     return httpx.Response(200, json={"status": "ok"})
                 payload = json.loads(request.content.decode("utf-8"))

@@ -29,7 +29,11 @@ from scale_kg.core.models import (
     TraversalRequest,
     TraversalResult,
 )
-from scale_kg.core.supernode import BUCKET_EDGE_TYPE, SupernodeBucketer, compute_bucket_id
+from scale_kg.core.supernode import (
+    BUCKET_EDGE_TYPE,
+    SupernodeBucketer,
+    compute_bucket_id,
+)
 
 
 class HugeGraphStore(GraphStore):
@@ -142,7 +146,9 @@ class HugeGraphStore(GraphStore):
                 "entity_type": node.entity_type,
                 "lakehouse_ref": node.lakehouse_ref,
                 "is_proxy": node.is_proxy,
-                "target_domain": node.target_domain.value if node.target_domain else None,
+                "target_domain": node.target_domain.value
+                if node.target_domain
+                else None,
                 "is_bucket": node.is_bucket,
                 "routing_props_json": json.dumps(node.routing_props, sort_keys=True),
             },
@@ -150,23 +156,37 @@ class HugeGraphStore(GraphStore):
 
     @staticmethod
     def _deserialize_vertex(payload: dict[str, Any]) -> EntityNode:
-        if "domain" in payload and "entity_type" in payload and "properties" not in payload:
+        if (
+            "domain" in payload
+            and "entity_type" in payload
+            and "properties" not in payload
+        ):
             return EntityNode.model_validate(payload)
         props = payload.get("properties", {})
         node_id = str(payload["id"])
-        domain_raw = props.get("domain") or canonical_domain_from_id(node_id) or Domain.TECHNOLOGY
+        domain_raw = (
+            props.get("domain")
+            or canonical_domain_from_id(node_id)
+            or Domain.TECHNOLOGY
+        )
         routing_raw = props.get("routing_props_json")
         routing_props = (
-            json.loads(routing_raw) if isinstance(routing_raw, str) else props.get("routing_props", {})
+            json.loads(routing_raw)
+            if isinstance(routing_raw, str)
+            else props.get("routing_props", {})
         )
         return EntityNode(
             id=node_id,
             domain=Domain(domain_raw),
-            entity_type=str(props.get("entity_type") or payload.get("label") or "Entity"),
+            entity_type=str(
+                props.get("entity_type") or payload.get("label") or "Entity"
+            ),
             routing_props=routing_props,
             lakehouse_ref=props.get("lakehouse_ref"),
             is_proxy=bool(props.get("is_proxy", False)),
-            target_domain=Domain(props["target_domain"]) if props.get("target_domain") else None,
+            target_domain=Domain(props["target_domain"])
+            if props.get("target_domain")
+            else None,
             is_bucket=bool(props.get("is_bucket", False)),
         )
 
@@ -181,7 +201,9 @@ class HugeGraphStore(GraphStore):
                 "domain": edge.domain.value,
                 "tenant": self.tenant_id,
                 "partition_hint": self.partition_hint(edge.source_id, edge.domain),
-                "target_domain": edge.target_domain.value if edge.target_domain else None,
+                "target_domain": edge.target_domain.value
+                if edge.target_domain
+                else None,
                 "is_derived": edge.is_derived,
                 "materialized_hot_path": edge.materialized_hot_path,
                 "routing_props_json": json.dumps(edge.routing_props, sort_keys=True),
@@ -190,22 +212,32 @@ class HugeGraphStore(GraphStore):
 
     @staticmethod
     def _deserialize_edge(payload: dict[str, Any]) -> RelationshipEdge:
-        if "source_id" in payload and "edge_type" in payload and "properties" not in payload:
+        if (
+            "source_id" in payload
+            and "edge_type" in payload
+            and "properties" not in payload
+        ):
             return RelationshipEdge.model_validate(payload)
         props = payload.get("properties", {})
         src = str(payload.get("outV") or payload["source_id"])
         dst = str(payload.get("inV") or payload["target_id"])
-        domain_raw = props.get("domain") or canonical_domain_from_id(src) or Domain.TECHNOLOGY
+        domain_raw = (
+            props.get("domain") or canonical_domain_from_id(src) or Domain.TECHNOLOGY
+        )
         routing_raw = props.get("routing_props_json")
         routing_props = (
-            json.loads(routing_raw) if isinstance(routing_raw, str) else props.get("routing_props", {})
+            json.loads(routing_raw)
+            if isinstance(routing_raw, str)
+            else props.get("routing_props", {})
         )
         return RelationshipEdge(
             source_id=src,
             target_id=dst,
             edge_type=str(payload.get("label") or payload["edge_type"]),
             domain=Domain(domain_raw),
-            target_domain=Domain(props["target_domain"]) if props.get("target_domain") else None,
+            target_domain=Domain(props["target_domain"])
+            if props.get("target_domain")
+            else None,
             is_derived=bool(props.get("is_derived", False)),
             materialized_hot_path=bool(props.get("materialized_hot_path", False)),
             routing_props=routing_props,
@@ -301,7 +333,9 @@ class HugeGraphStore(GraphStore):
                 edge = edge.model_copy(
                     update={"source_id": logical_src, "target_id": logical_dst}
                 )
-            neighbor_id = edge.target_id if edge.source_id == node_id else edge.source_id
+            neighbor_id = (
+                edge.target_id if edge.source_id == node_id else edge.source_id
+            )
             key = (edge.source_id, edge.target_id, edge.edge_type)
             if key in seen_keys:
                 continue
@@ -323,7 +357,9 @@ class HugeGraphStore(GraphStore):
         depth = min(request.max_depth, self._enforcer.config.max_depth)
         limit = min(request.max_results, self._enforcer.config.max_results)
         edge_filter = (
-            ", ".join(f"'{et}'" for et in request.edge_types) if request.edge_types else ""
+            ", ".join(f"'{et}'" for et in request.edge_types)
+            if request.edge_types
+            else ""
         )
         script = (
             "g.V(seed_ids).has('tenant', tenant)"
@@ -365,9 +401,7 @@ class HugeGraphStore(GraphStore):
         }
         return cypher, params
 
-    def build_rest_kneighbor_payload(
-        self, request: TraversalRequest
-    ) -> dict[str, Any]:
+    def build_rest_kneighbor_payload(self, request: TraversalRequest) -> dict[str, Any]:
         """Build a HugeGraph REST /traversers/kneighbor request payload."""
         depth = min(request.max_depth, self._enforcer.config.max_depth)
         limit = min(request.max_results, self._enforcer.config.max_results)
@@ -388,7 +422,11 @@ class HugeGraphStore(GraphStore):
 
     async def traverse_k_hop(self, request: TraversalRequest) -> TraversalResult:
         tracker = self._enforcer.create_runtime_tracker(request)
-        domain_hint = request.domains[0] if request.domains and len(request.domains) == 1 else None
+        domain_hint = (
+            request.domains[0]
+            if request.domains and len(request.domains) == 1
+            else None
+        )
         started = time.monotonic()
 
         if self.query_mode == "gremlin":
@@ -416,7 +454,10 @@ class HugeGraphStore(GraphStore):
                 domain=domain_hint,
             )
 
-        raw_nodes = [self._deserialize_vertex(v) for v in data.get("vertices", data.get("nodes", []))]
+        raw_nodes = [
+            self._deserialize_vertex(v)
+            for v in data.get("vertices", data.get("nodes", []))
+        ]
         nodes = [n for n in raw_nodes if not n.is_bucket]
 
         raw_edges = [self._deserialize_edge(e) for e in data.get("edges", [])]
@@ -443,12 +484,14 @@ class HugeGraphStore(GraphStore):
         unwrapped_hops_total = 0
         depth_reached = 0
         for raw_path in data.get("paths", []):
-            lp, unwrapped = SupernodeBucketer.unwrap_path([str(v) for v in raw_path])
-            unwrapped_hops_total += unwrapped
-            if len(lp) > 1 and tuple(lp) not in seen_paths:
-                seen_paths.add(tuple(lp))
-                logical_paths.append(lp)
-                depth_reached = max(depth_reached, len(lp) - 1)
+            logical_path, bucket_hops = SupernodeBucketer.unwrap_path(
+                [str(vertex_id) for vertex_id in raw_path]
+            )
+            unwrapped_hops_total += bucket_hops
+            if len(logical_path) > 1 and tuple(logical_path) not in seen_paths:
+                seen_paths.add(tuple(logical_path))
+                logical_paths.append(logical_path)
+                depth_reached = max(depth_reached, len(logical_path) - 1)
 
         nodes_expanded = int(data.get("nodes_expanded", len(raw_nodes)))
         violation = tracker.check_step(
@@ -461,9 +504,7 @@ class HugeGraphStore(GraphStore):
             for e in edges
             if e.target_domain is not None and e.target_domain != e.domain
         )
-        locality = (
-            round((len(edges) - cross_domain) / len(edges), 4) if edges else 1.0
-        )
+        locality = round((len(edges) - cross_domain) / len(edges), 4) if edges else 1.0
         if violation is not None:
             return tracker.build_aborted_result(
                 violation=violation,
@@ -536,9 +577,7 @@ class HugeGraphStore(GraphStore):
         )
 
     async def count_stats(self) -> GraphStats:
-        data = await self._request(
-            "GET", f"/graphs/{self.graph_name}/traversers/count"
-        )
+        data = await self._request("GET", f"/graphs/{self.graph_name}/traversers/count")
         return GraphStats(
             node_count=int(data.get("node_count", 0)),
             edge_count=int(data.get("edge_count", 0)),

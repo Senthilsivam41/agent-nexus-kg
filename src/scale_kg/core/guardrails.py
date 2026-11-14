@@ -22,7 +22,16 @@ FORBIDDEN_PAYLOAD_KEYS: frozenset[str] = frozenset(
 )
 
 CONTENT_BEARING_ENTITY_TYPES: frozenset[str] = frozenset(
-    {"document", "chunk", "passage", "article", "transcript", "file", "blob", "artifact"}
+    {
+        "document",
+        "chunk",
+        "passage",
+        "article",
+        "transcript",
+        "file",
+        "blob",
+        "artifact",
+    }
 )
 
 DERIVED_EDGE_TYPES: frozenset[str] = frozenset({"SIMILAR_TO", "INDIRECTLY_USES"})
@@ -198,9 +207,8 @@ class GuardrailEnforcer:
         """Enforce Lean Graph Rule on EntityNode writes."""
         self._reject_forbidden_props(node.routing_props, entity_id=node.id)
 
-        requires_ref = (
-            node.entity_type.lower() in CONTENT_BEARING_ENTITY_TYPES
-            or bool(node.routing_props.get("has_content"))
+        requires_ref = node.entity_type.lower() in CONTENT_BEARING_ENTITY_TYPES or bool(
+            node.routing_props.get("has_content")
         )
         if requires_ref and (not node.lakehouse_ref or not node.lakehouse_ref.strip()):
             raise GuardrailViolationError(

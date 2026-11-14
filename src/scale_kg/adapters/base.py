@@ -114,7 +114,9 @@ class FaultState:
 
     def applies_to(self, domain: Domain | None) -> bool:
         """Return True if fault targets all domains or the specified domain."""
-        return self.target_domain is None or domain is None or self.target_domain == domain
+        return (
+            self.target_domain is None or domain is None or self.target_domain == domain
+        )
 
     def check(self, domain: Domain | None = None) -> None:
         """Raise an appropriate error if an active fault blocks the operation."""
@@ -124,7 +126,9 @@ class FaultState:
             return
         if not self._consume_failure_budget():
             return
-        scope = f" for domain '{self.target_domain.value}'" if self.target_domain else ""
+        scope = (
+            f" for domain '{self.target_domain.value}'" if self.target_domain else ""
+        )
         if self.mode == FaultMode.NODE_DOWN:
             raise GraphStoreUnavailableError(f"Simulated node outage{scope}.")
         if self.mode == FaultMode.TIMEOUT:
@@ -132,7 +136,9 @@ class FaultState:
         if self.mode == FaultMode.TRANSIENT_ERROR:
             raise GraphStoreUnavailableError(f"Simulated transient failure{scope}.")
 
-    def health_state(self) -> tuple[bool, Literal["healthy", "degraded", "unavailable"]]:
+    def health_state(
+        self,
+    ) -> tuple[bool, Literal["healthy", "degraded", "unavailable"]]:
         """Return (healthy, status) tuple reflecting current fault state."""
         if self.mode == FaultMode.NONE:
             return True, "healthy"

@@ -57,12 +57,16 @@ class JanusGraphStore(_ContractStubBase):
             notes="Secondary 1B-10B+ option requiring 3 distributed clusters; contract stub.",
         )
 
-    def build_gremlin_query(self, request: TraversalRequest) -> tuple[str, dict[str, Any]]:
+    def build_gremlin_query(
+        self, request: TraversalRequest
+    ) -> tuple[str, dict[str, Any]]:
         """Build a bounded Gremlin traversal string for JanusGraph."""
         depth = min(request.max_depth, self._enforcer.config.max_depth)
         limit = min(request.max_results, self._enforcer.config.max_results)
         edge_arg = (
-            ", ".join(f"'{et}'" for et in request.edge_types) if request.edge_types else ""
+            ", ".join(f"'{et}'" for et in request.edge_types)
+            if request.edge_types
+            else ""
         )
         script = (
             "g.V().has('global_id', within(seed_ids))"
@@ -122,7 +126,9 @@ class NebulaGraphStore(_ContractStubBase):
         depth = min(request.max_depth, self._enforcer.config.max_depth)
         limit = min(request.max_results, self._enforcer.config.max_results)
         edge_clause = (
-            " OVER " + ", ".join(request.edge_types) if request.edge_types else " OVER *"
+            " OVER " + ", ".join(request.edge_types)
+            if request.edge_types
+            else " OVER *"
         )
         seeds = ", ".join(f"'{sid}'" for sid in request.seed_ids)
         ngql = (
