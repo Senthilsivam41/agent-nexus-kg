@@ -13,3 +13,10 @@
 - [x] `[E2.3]` `SEN-71`: `HugeGraphStore` (`hugegraph_adapter.py`) async REST/Gremlin/OpenCypher client with PD + HStore `domain`/`tenant` placement hints
 - [x] `[E2.4]` `SEN-72`: `Neo4jGraphStore` (`neo4j_adapter.py`) async Cypher Composite adapter with cross-shard proxy nodes + `JanusGraphStore` & `NebulaGraphStore` contract stubs (`stubs.py`)
 - [x] Verify all E1 + E2 tests pass via `.venv/bin/pytest -v` (103/103 passed, incl. `test_e2_validation.py`)
+
+# Epic E3 (`SEN-63`): Semantic Domain Routing, Federation & Hybrid GraphRAG Pipeline
+
+- [x] `[E3.1]` `SEN-73`: Canonical `<domain>:<entity_type>:<slug>` O(1) Hop-0 parser, `EntityDirectory` (legacy/opaque IDs, alias canonicalization, lookup telemetry), and cross-domain ghost/proxy vertices (`is_proxy=True`, `target_domain`)
+- [x] `[E3.2]` `SEN-74`: Federated `QueryCoordinator` across domain shards emitting `cross_domain_hops` & `single_domain_locality_ratio`, on-the-fly derived rules (`SIMILAR_TO`, `INDIRECTLY_USES`), and automatic `materialized_hot_path=True` promotion
+- [x] `[E3.3]` `SEN-75`: Parquet/Iceberg `LakehouseContentStore` (authoritative document payloads & historical graph slices) + 5-stage `HybridGraphRAGRouter` (Vector top-K seeds → guarded 1–3 hop expansion → RRF fusion → selective top-N hydration → grounded citations)
+- [x] Verify full suite, linter, typechecker, and build pass (`make check`)
