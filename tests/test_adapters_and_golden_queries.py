@@ -103,7 +103,9 @@ class _HugeGraphMockTransport(httpx.AsyncBaseTransport):
         self.recorded_paths.append(request.url.path)
         path = request.url.path
         method = request.method
-        body = json.loads(request.content.decode("utf-8")) if request.content else None
+        body: Any = (
+            json.loads(request.content.decode("utf-8")) if request.content else None
+        )
 
         if method == "GET" and path == "/versions":
             return httpx.Response(200, json={"versions": {"api": "1.5.0"}})

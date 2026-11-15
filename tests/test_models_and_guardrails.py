@@ -269,7 +269,18 @@ class TestPreFlightAndRuntimeGuardrails:
         self, field: str, value: float, expected_code: GuardrailViolationCode
     ) -> None:
         enforcer = GuardrailEnforcer()
-        req = TraversalRequest(seed_ids=["customer:org:1"], **{field: value})
+        if field == "max_results":
+            req = TraversalRequest(seed_ids=["customer:org:1"], max_results=int(value))
+        elif field == "max_execution_seconds":
+            req = TraversalRequest(
+                seed_ids=["customer:org:1"], max_execution_seconds=value
+            )
+        elif field == "max_expanded_nodes":
+            req = TraversalRequest(
+                seed_ids=["customer:org:1"], max_expanded_nodes=int(value)
+            )
+        else:
+            raise AssertionError(f"unexpected budget field {field}")
         with pytest.raises(GuardrailViolationError) as exc_info:
             enforcer.validate_request(req)
         assert exc_info.value.violation.code == expected_code
