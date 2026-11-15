@@ -380,7 +380,12 @@ class Neo4jGraphStore(GraphStore):
         limit: int = 5000,
     ) -> list[tuple[RelationshipEdge, EntityNode]]:
         hint = canonical_domain_from_id(node_id)
-        target_domains = [hint] if hint else list(Domain)
+        if direction == "out" and hint is not None:
+            target_domains = [hint]
+        elif hint is not None:
+            target_domains = [hint, *(d for d in Domain if d != hint)]
+        else:
+            target_domains = list(Domain)
         cypher = self.build_neighbors_cypher(direction=direction, limit=limit)
         params = {
             "node_id": node_id,
