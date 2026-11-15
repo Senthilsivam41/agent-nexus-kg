@@ -34,27 +34,7 @@ For module-level class contracts, sequence flows, Parquet schemas, and algorithm
 
 ## 3. Four-Layer Logical Architecture
 
-```mermaid
-flowchart TD
-    L1["Layer 1: Hybrid GraphRAG & Retrieval - HybridGraphRAGRouter, InMemoryVectorIndex (5-stage RRF)"]
-    L2["Layer 2: Routing, Guardrails & Federation - QueryCoordinator, EntityDirectory, GuardrailEnforcer, SupernodeBucketer"]
-
-    subgraph L3["Layer 3: Pluggable GraphStore Adapters"]
-        direction LR
-        IM["InMemoryGraphStore (Reference)"]
-        IPG["IcebergPuppyGraphStore (Tier-1 Zero-ETL)"]
-        HG["HugeGraphStore (Tier-1 PD + HStore)"]
-        NJ["Neo4jGraphStore (Tier-1 Composite)"]
-        ST["JanusGraphStore / NebulaGraphStore (Tier-2 Stubs)"]
-    end
-
-    L4["Layer 4: Authoritative Lakehouse Tier - LakehouseContentStore (Parquet Docs & Graph Slices)"]
-
-    L1 -->|"TraversalRequest / RRF"| L2
-    L1 -->|"hydrate_batch(top-N lakehouse_ref)"| L4
-    L2 -->|"Async GraphStore ABC"| L3
-    L3 -.->|"lakehouse_ref URI pointers only"| L4
-```
+<img width="752" height="757" alt="image" src="https://github.com/user-attachments/assets/d2d54d15-3d32-493e-8919-c8509f902b7b" />
 
 ### Layer Responsibilities
 
@@ -71,15 +51,8 @@ flowchart TD
 
 The graph is partitioned across four canonical `Domain` shards (`customer`, `knowledge`, `technology`, `product`):
 
-```mermaid
-flowchart LR
-    ID["Entity ID"] -->|"O(1) Parse"| CAN{"Matches domain:type:slug?"}
-    CAN -->|"Yes"| SHARD["Direct Shard Lookup (O(1) Hop-0)"]
-    CAN -->|"No (Legacy / Alias)"| DIR["EntityDirectory (canonicalize + fallback)"]
-    DIR --> SHARD
-    SHARD -->|"Cross-Domain Edge"| PROXY["In-Shard Ghost Proxy (is_proxy=True, target_domain)"]
-    PROXY -->|"Handoff"| REMOTE["Remote Domain Shard (Resolve Real Node)"]
-```
+<img width="1024" height="1024" alt="image" src="https://github.com/user-attachments/assets/b76ee623-9cee-4afe-97ef-9d58b47387f4" />
+
 
 - **Hop-0 O(1) Routing:** `parse_canonical_id()` extracts the owning `Domain` directly from `<domain>:<entity_type>:<slug>` (stripping any `::bucket::<k>` suffix) without querying a central index.
 - **Directory Fallback & Aliasing:** `EntityDirectory` resolves legacy/opaque IDs via `_id_to_domain` and resolves alternate IDs via cycle-safe `canonicalize()`.
