@@ -42,26 +42,8 @@ class GraphStore(Protocol):
 
 ## 2. Logical Architecture & Storage Adapters
 
-```text
-          Kinetic-V Agents / GraphRAG / Reasoning Layer
-                                │
-                    Semantic Graph API (REST / gRPC)
-                                │
-     Query Service (query planning, hop/fan-out limits, caching, auth)
-                                │
-                       GraphStore Interface
-                ┌───────────────┼───────────────┐
-                ▼               ▼               ▼
-        HugeGraph Adapter  JanusGraph Adapter  Neo4j Adapter
-         (Primary 10B+)     (Secondary 10B+)   (Small/Medium)
-                │               │               │
-         HugeGraph Server   JanusGraph +       Neo4j DB
-          + PD + HStore    ScyllaDB + OpenSearch
-                                │
-                                ▼  reference IDs / URIs
-        ────── Authoritative Data & Knowledge Stores ──────
-        Lakehouse │ Object Store │ Data Products │ Vector Store
-```
+<img width="1024" height="1024" alt="image" src="https://github.com/user-attachments/assets/7f6d9710-c890-40c8-97d1-bd67c002160d" />
+
 
 | Engine Candidate | Role | Storage & Partitioning | Query Languages | Operational Profile |
 | :--- | :--- | :--- | :--- | :--- |
