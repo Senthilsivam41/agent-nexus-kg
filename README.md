@@ -1,77 +1,168 @@
-# Agent Nexus KG (`agent-nexus-kg`)
+# Agent Nexus KG (`scale-kg`)
 
-> Distributed, engine-agnostic semantic knowledge graph platform (100M–10B+ edges) with pluggable GraphStore adapters for multi-hop Kinetic-V GraphRAG.
+> Engine-agnostic semantic knowledge graph SDK and Gate 2 benchmark harness (100M–10B+ edge target trajectory) with pluggable `GraphStore` adapters for multi-hop Kinetic-V GraphRAG.
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-3776AB.svg)](https://www.python.org/)
-[![Kubernetes Native](https://img.shields.io/badge/Kubernetes-Native-326CE5.svg)](https://kubernetes.io/)
-![Architecture: Lean Semantic GraphRAG](https://img.shields.io/badge/Architecture-Lean_Semantic_GraphRAG-10B981.svg)
+![Architecture: 4-Layer Lean GraphRAG](https://img.shields.io/badge/Architecture-4--Layer_Lean_GraphRAG-10B981.svg)
 
-**Agent Nexus KG** provides the structural memory and multi-hop reasoning backbone for Kinetic-V agents. Designed to scale seamlessly from 100 million to 10 billion+ relationships without vendor lock-in, it separates lightweight topological graph navigation from heavy content storage and abstracts physical graph engines behind a unified `GraphStore` interface.
+**Agent Nexus KG (`scale-kg`)** implements the Phase 0 SDK foundations and Phase 1 benchmark harness for scaling Kinetic-V structural memory without vendor lock-in. It separates lightweight topological graph navigation from heavy document payloads, enforces query/write guardrails, partitions high-degree supernodes, and abstracts storage backends behind an async `GraphStore` interface.
 
-## Key Capabilities
+---
 
-* **Lean Semantic Graph Architecture:** Stores only entity nodes, typed relationships, and traversal-relevant properties in the graph while linking full documents, data products, and embeddings in authoritative stores via reference URIs.
-* **Pluggable `GraphStore` Abstraction:** Swap or benchmark backends without changing agent or GraphRAG retrieval code:
-  * **Apache HugeGraph (Primary):** Built-in Placement Driver (PD) + Raft-replicated distributed HStore for native 1B–10B+ edge partitioning.
-  * **JanusGraph + ScyllaDB (Secondary):** High-scale distributed storage paired with OpenSearch/Elasticsearch mixed indexes.
-  * **Neo4j (Baseline):** Fast local development and small-to-medium single-cluster deployments.
-* **Supernode-Safe Query Service:** Enforces hop depth bounds (1–3 hops), per-hop fan-out caps, time-sliced edge bucketing, and query result caching to prevent high-degree vertex latency spikes.
-* **Hybrid Bulk & Streaming Ingestion:** Combines high-throughput bulk loaders ($\ge 50\text{K}$ edges/sec) with idempotent Apache Kafka streaming upserts and full source lineage tracking.
-* **Production-Grade Observability & Security:** Instrumented with OpenTelemetry, Prometheus, Grafana, and Langfuse retrieval tracing, secured via TLS, OIDC/Entra ID, and RBAC.
+## Capability Status
 
-## Architecture
+Following repository guidelines, capabilities are separated by verified implementation status:
 
-<img width="1024" height="1024" alt="image" src="https://github.com/user-attachments/assets/171612d1-1628-475a-b945-596f9d459639" />
+### Implemented & Verified Locally (`pytest` / `ruff` / `mypy`)
+* **Lean Semantic Graph & Guardrails (`scale_kg.core`):** Rejects heavy payload keys (`content`, `raw_text`, `embedding`, `history_blob`), enforces `lakehouse_ref` pointers on content-bearing entity types, rejects unmaterialized derived edges at write time, and bounds every traversal (`max_depth <= 3`, `max_results <= 5000`, `max_execution_seconds <= 2.0`, `max_expanded_nodes <= 50000`).
+* **Deterministic 16-Way Supernode Bucketing (`SupernodeBucketer`):** Splits seeded (`technology:lang:python`, `customer:region:india`, `Language`, `Country`) and runtime-promoted hubs into `<hub_id>::bucket::0..15` via CRC32 hashing, executing 0-1 BFS (`BUCKET_LINK` at zero hop cost) and unwrapping bucket hops before returning logical paths.
+* **Semantic Domain Federation (`QueryCoordinator` & `EntityDirectory`):** Partitions entities across `customer`, `knowledge`, `technology`, and `product` shards with O(1) Hop-0 `<domain>:<entity_type>:<slug>` parsing, alias canonicalization, in-shard ghost/proxy nodes, on-the-fly derived edge rules (`SIMILAR_TO`, `INDIRECTLY_USES`), and automatic hot-path promotion (`hot_path_threshold=3`).
+* **Hybrid Vector + KG + Lakehouse Retrieval (`HybridGraphRAGRouter` & `LakehouseContentStore`):** 5-stage Seed-Then-Expand pipeline combining `InMemoryVectorIndex` cosine search, guarded KG expansion, Reciprocal Rank Fusion (`rrf_k=60`), selective top-$N$ PyArrow/Parquet hydration, and grounded `SourceCitation` assembly.
+* **Reference & Zero-ETL Parquet Adapters:** `InMemoryGraphStore` (partitioned reference baseline with `FaultState` injection) and `IcebergPuppyGraphStore` local PyArrow mode (`domain=<d>/bucket_16=<b>` Parquet partitions, Iceberg v2 metadata, `puppygraph_schema.json`, partition-pruned scans).
+* **Gate 2 Benchmark Harness (`scale_kg.benchmark`):** `PowerLawGraphGenerator` (`micro`, `local`, `cluster` presets), frozen `GoldenQuerySuite` (`GQ-01`..`GQ-07` cross-adapter parity), 7 PoC workloads (`BenchmarkSuite`), and automated weighted ADR generation (`generate_gate2_adr`).
 
+### Implemented & Verified Against Mock Transports / Drivers (Live Cluster Integration Pending)
+* **`HugeGraphStore`:** Async `httpx` REST/Gremlin/OpenCypher client with PD partition headers and deterministic placement hints.
+* **`Neo4jGraphStore`:** Async `AsyncCypherDriver` Composite shard adapter (`kg_<domain>`) with cross-shard proxy creation and continuation queues (optional `scale-kg[neo4j]` extra).
+* **`IcebergPuppyGraphStore` (Remote Mode):** HTTP `/cypher` and `/gremlin` execution against a live PuppyGraph endpoint.
 
-For full architectural specifications, ontology schemas, supernode mitigation strategies, and Kubernetes deployment topologies, see [`docs/DESIGN.md`](docs/DESIGN.md).
+### Contract Stubs & Planned Infrastructure
+* **Tier-2 Contract Stubs (`scale_kg.adapters.stubs`):** `JanusGraphStore` (ScyllaDB + OpenSearch Gremlin builder) and `NebulaGraphStore` (nGQL builder) extend `_ContractStubBase(InMemoryGraphStore)` for contract parity and Gate 2 modeling.
+* **Planned (Not Yet Implemented in `src/scale_kg/`):** FastAPI REST/gRPC server, Kafka streaming ingestion pipelines, Kubernetes multi-AZ StatefulSets/Helm charts, OpenTelemetry/Prometheus/Langfuse exporters, OIDC/Entra ID auth, and live 100M–10B cluster benchmarks (see [System Design Specification](docs/DESIGN.md)).
 
-## Core Tech Stack & Skills
+---
 
-* **Graph Engines & Query Languages:** Apache HugeGraph (PD + HStore), JanusGraph, Neo4j, Apache TinkerPop Gremlin, OpenCypher
-* **Distributed Storage & Search:** ScyllaDB / Apache Cassandra, OpenSearch / Elasticsearch, S3-compatible Object Storage
-* **Backend & Ingestion:** Python 3.11+, REST / gRPC, Apache Kafka (CDC & idempotent stream upserts)
-* **AI & GraphRAG Orchestration:** Multi-hop GraphRAG, Hybrid Vector + Graph Retrieval, Agentic Reasoning, Langfuse
-* **Cloud & Observability:** Kubernetes (StatefulSets, Helm/Operators), OpenTelemetry, Prometheus, Grafana, OIDC / Entra ID
+## Architecture Overview
 
-## Performance & Reliability Targets (SLOs)
+```mermaid
+flowchart TD
+    L1["Layer 1: HybridGraphRAGRouter + InMemoryVectorIndex"]
+    L2["Layer 2: QueryCoordinator + EntityDirectory + GuardrailEnforcer + SupernodeBucketer"]
+    L3["Layer 3: GraphStore Adapters (InMemory, Iceberg/PuppyGraph, HugeGraph, Neo4j, Stubs)"]
+    L4["Layer 4: LakehouseContentStore (Parquet Documents & Historical Slices)"]
 
-| Metric | Target |
-| :--- | :--- |
-| **Graph Scale** | 100M $\rightarrow$ 1B $\rightarrow$ 10B+ relationships |
-| **Traversal Latency** | 2-hop P95 < 100 ms \| 3-hop P95 < 500 ms |
-| **Query Concurrency** | 500+ concurrent GraphRAG retrievals |
-| **Bulk Ingestion Rate** | 50,000+ edges/sec sustained |
-| **Availability** | 99.9%+ multi-AZ replica fault tolerance |
+    L1 -->|"TraversalRequest / RRF"| L2
+    L1 -->|"Selective top-N hydrate_batch"| L4
+    L2 -->|"Async GraphStore ABC"| L3
+    L3 -.->|"lakehouse_ref URI pointers"| L4
+```
 
-## Planned Repository Structure
+* **Architecture Document:** [docs/architecture.md](docs/architecture.md)
+* **Low-Level Design & Diagrams:** [docs/low-level-design.md](docs/low-level-design.md)
+* **Original System Design & Roadmap:** [docs/DESIGN.md](docs/DESIGN.md)
 
-<img width="1024" height="1024" alt="image" src="https://github.com/user-attachments/assets/29ea952f-a963-4c9f-b099-faba72cddae1" />
+---
 
+## Repository Structure
+
+```text
+scale-kg/
+├── Makefile                    # setup, demo, and check targets
+├── portfolio.yaml              # Portfolio product manifest
+├── pyproject.toml              # Package metadata, dependencies, ruff & mypy config
+├── docs/
+│   ├── architecture.md         # 4-layer architecture, adapters, SLAs, status matrix
+│   ├── low-level-design.md     # Class, sequence, state, ER, and flow diagrams
+│   ├── DESIGN.md               # Initial system design spec & 24-week roadmap
+│   ├── proposal/               # Project proposal documents
+│   └── superpowers/            # Design specs and implementation plans
+├── src/scale_kg/
+│   ├── config.py               # GuardrailConfig, LatencyBudgetConfig, ScaleKGConfig
+│   ├── demo.py                 # Deterministic offline in-memory traversal demo
+│   ├── core/                   # Domain models, GuardrailEnforcer, SupernodeBucketer
+│   ├── routing/                # EntityDirectory, QueryCoordinator, HybridGraphRAGRouter
+│   ├── adapters/               # GraphStore ABC, 0-1 BFS, InMemory, Iceberg, HugeGraph, Neo4j, stubs
+│   ├── lakehouse/              # Parquet-backed LakehouseContentStore
+│   └── benchmark/              # PowerLawGraphGenerator, GoldenQuerySuite, 7 workloads, Gate 2 ADR
+└── tests/                      # Unit, adapter contract, E2–E4 validation, and benchmark suites
+```
+
+---
 
 ## Quickstart
 
+Requires **Python 3.11+** and [`uv`](https://docs.astral.sh/uv/).
+
 ```bash
-# 1. Clone the repository
-git clone https://github.com/Senthilsivam41/agent-nexus-kg.git
-cd agent-nexus-kg
+# 1. Install locked dependencies
+make setup
 
-# 2. Set up Python environment
-python3 -m venv .venv
-source .venv/bin/activate
+# 2. Run the deterministic offline demo (no external DB or API keys required)
+make demo
 
-# 3. Review system architecture & implementation phases
-cat docs/DESIGN.md
+# 3. Run formatter, linter, typechecker, pytest suite, and wheel/sdist build
+make check
 ```
 
-## Delivery Roadmap
+### Minimal Python SDK Example
 
-* **Phase 0–1 (Weeks 1–6):** `GraphStore` protocol, Semantic Graph API specification, lean ontology schema, and Neo4j baseline adapter.
-* **Phase 2 (Weeks 7–12):** Apache HugeGraph and JanusGraph + ScyllaDB adapters + 100M/1B edge benchmark decision gate.
-* **Phase 3 (Weeks 13–18):** Multi-AZ Kubernetes deployment, Kafka ingestion pipelines, TLS/OIDC security, and OpenTelemetry monitoring.
-* **Phase 4–5 (Weeks 19–24):** Kinetic-V GraphRAG integration, groundedness evaluation, failover testing, and production go-live.
+```python
+import asyncio
+from scale_kg.adapters import InMemoryGraphStore
+from scale_kg.core import Domain, EntityNode, RelationshipEdge, TraversalRequest
+from scale_kg.routing import QueryCoordinator
+
+
+async def main() -> None:
+    coordinator = QueryCoordinator(InMemoryGraphStore())
+    await coordinator.upsert_nodes(
+        [
+            EntityNode(
+                id="customer:org:acme",
+                domain=Domain.CUSTOMER,
+                entity_type="Organization",
+            ),
+            EntityNode(
+                id="technology:lang:python",
+                domain=Domain.TECHNOLOGY,
+                entity_type="Language",
+            ),
+            EntityNode(
+                id="product:sdk:scale-kg", domain=Domain.PRODUCT, entity_type="Product"
+            ),
+        ]
+    )
+    await coordinator.upsert_edges(
+        [
+            RelationshipEdge(
+                source_id="customer:org:acme",
+                target_id="technology:lang:python",
+                edge_type="USES",
+                domain=Domain.CUSTOMER,
+                target_domain=Domain.TECHNOLOGY,
+            ),
+            RelationshipEdge(
+                source_id="technology:lang:python",
+                target_id="product:sdk:scale-kg",
+                edge_type="POWERS",
+                domain=Domain.TECHNOLOGY,
+                target_domain=Domain.PRODUCT,
+            ),
+        ]
+    )
+    result = await coordinator.traverse(
+        TraversalRequest(seed_ids=["customer:org:acme"], max_depth=2)
+    )
+    print(result.paths)
+
+
+asyncio.run(main())
+```
+
+---
+
+## Gate 2 Latency Budgets (`LatencyBudgetConfig`)
+
+| Metric | Target Budget | Enforced Guardrail (`GuardrailConfig`) |
+| :--- | :--- | :--- |
+| **1-Hop P95 Latency** | <= 25 ms | `max_depth <= 3` |
+| **2-Hop P95 Latency** | <= 100 ms | `max_results <= 5,000` |
+| **3-Hop P95 Latency** | <= 300 ms | `max_expanded_nodes <= 50,000` |
+| **Hard Timeout** | <= 2,000 ms | `max_execution_seconds <= 2.0` |
+
+---
 
 ## License
 
-Licensed under the [Apache License 2.0](https://opensource.org/licenses/Apache-2.0).
+Licensed under the [Apache License 2.0](LICENSE).
