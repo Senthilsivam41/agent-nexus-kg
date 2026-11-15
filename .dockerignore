@@ -1,0 +1,16 @@
+.git
+.github
+.venv
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.code-review-graph
+.docker-data
+.coverage
+dist
+build
+*.egg-info
+graphify-out
+docs
+tasks
+tests

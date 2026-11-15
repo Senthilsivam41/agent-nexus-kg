@@ -14,7 +14,13 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pydantic import BaseModel
 
-from scale_kg.adapters._traversal import resolve_logical_neighbors, run_guarded_bfs
+from scale_kg.adapters._traversal import (
+    _unwrap_edge,
+    candidate_bucket_ids,
+    finalize_remote_traversal,
+    resolve_logical_neighbors,
+    run_guarded_bfs,
+)
 from scale_kg.adapters.base import (
     AdapterCostProfile,
     FaultMode,
@@ -23,17 +29,21 @@ from scale_kg.adapters.base import (
     GraphStore,
     GraphStoreError,
     HealthStatus,
+    validate_edge_types,
 )
 from scale_kg.core.guardrails import GuardrailEnforcer
 from scale_kg.core.models import (
     Domain,
     EntityNode,
     RelationshipEdge,
-    TraversalMetrics,
     TraversalRequest,
     TraversalResult,
 )
-from scale_kg.core.supernode import SupernodeBucketer, compute_bucket_id
+from scale_kg.core.supernode import (
+    BUCKET_EDGE_TYPE,
+    SupernodeBucketer,
+    compute_bucket_id,
+)
 
 NODE_ARROW_SCHEMA = pa.schema(
     [
@@ -110,6 +120,7 @@ class IcebergPuppyGraphStore(GraphStore):
         self._cumulative_total_partitions = 0
         self._cumulative_scanned_partitions = 0
         self._snapshot_seq = 0
+        self._has_buckets = False
 
         self._ensure_layout()
 
@@ -364,6 +375,8 @@ class IcebergPuppyGraphStore(GraphStore):
         grouped: dict[tuple[Domain, int], dict[str, EntityNode]] = {}
         for node in nodes:
             self._fault.check(node.domain)
+            if node.is_bucket or SupernodeBucketer.is_bucket_node_id(node.id):
+                self._has_buckets = True
             bucket = compute_bucket_id(node.id, self._num_buckets)
             grouped.setdefault((node.domain, bucket), {})[node.id] = node
 
@@ -391,6 +404,12 @@ class IcebergPuppyGraphStore(GraphStore):
         ] = {}
         for edge in edges:
             self._fault.check(edge.domain)
+            if (
+                edge.edge_type == BUCKET_EDGE_TYPE
+                or SupernodeBucketer.is_bucket_node_id(edge.source_id)
+                or SupernodeBucketer.is_bucket_node_id(edge.target_id)
+            ):
+                self._has_buckets = True
             src_bucket = compute_bucket_id(edge.source_id, self._num_buckets)
             key = (edge.source_id, edge.target_id, edge.edge_type)
             grouped.setdefault((edge.domain, src_bucket), {})[key] = edge
@@ -469,12 +488,17 @@ class IcebergPuppyGraphStore(GraphStore):
         return edges
 
     def build_cypher_query(
-        self, request: TraversalRequest
+        self, request: TraversalRequest, *, bucketed: bool | None = None
     ) -> tuple[str, dict[str, Any]]:
         """Build a bounded OpenCypher query for PuppyGraph."""
+        use_buckets = self._has_buckets if bucketed is None else bucketed
         depth = min(request.max_depth, self._enforcer.config.max_depth)
+        physical_depth = depth * 3 if use_buckets else depth
         limit = min(request.max_results, self._enforcer.config.max_results)
-        rel_filter = ":" + "|".join(request.edge_types) if request.edge_types else ""
+        edge_types = validate_edge_types(request.edge_types)
+        if edge_types and use_buckets and BUCKET_EDGE_TYPE not in edge_types:
+            edge_types = [*edge_types, BUCKET_EDGE_TYPE]
+        rel_filter = ":" + "|".join(edge_types) if edge_types else ""
         domain_clause = (
             " AND ALL(n IN nodes(p) WHERE n.domain IN $domains)"
             if request.domains
@@ -486,7 +510,7 @@ class IcebergPuppyGraphStore(GraphStore):
             else " AND ALL(rel IN relationships(p) WHERE coalesce(rel.is_derived, false) = false)"
         )
         cypher = (
-            f"MATCH p = (s:Entity)-[r{rel_filter}*1..{depth}]->(t:Entity) "
+            f"MATCH p = (s:Entity)-[r{rel_filter}*1..{physical_depth}]->(t:Entity) "
             f"WHERE s.id IN $seed_ids{domain_clause}{derived_clause} "
             f"RETURN p LIMIT {limit}"
         )
@@ -499,19 +523,20 @@ class IcebergPuppyGraphStore(GraphStore):
         return cypher, params
 
     def build_gremlin_query(
-        self, request: TraversalRequest
+        self, request: TraversalRequest, *, bucketed: bool | None = None
     ) -> tuple[str, dict[str, Any]]:
         """Build a bounded Gremlin query for PuppyGraph."""
+        use_buckets = self._has_buckets if bucketed is None else bucketed
         depth = min(request.max_depth, self._enforcer.config.max_depth)
+        physical_depth = depth * 3 if use_buckets else depth
         limit = min(request.max_results, self._enforcer.config.max_results)
-        edge_arg = (
-            ", ".join(f"'{et}'" for et in request.edge_types)
-            if request.edge_types
-            else ""
-        )
+        edge_types = validate_edge_types(request.edge_types)
+        if edge_types and use_buckets and BUCKET_EDGE_TYPE not in edge_types:
+            edge_types = [*edge_types, BUCKET_EDGE_TYPE]
+        edge_arg = ", ".join(f"'{et}'" for et in edge_types) if edge_types else ""
         gremlin = (
             "g.V().has('id', within(seed_ids))"
-            f".repeat(outE({edge_arg}).inV()).times({depth}).emit()"
+            f".repeat(outE({edge_arg}).inV()).times({physical_depth}).emit()"
             f".path().limit({limit})"
         )
         bindings: dict[str, Any] = {
@@ -527,13 +552,14 @@ class IcebergPuppyGraphStore(GraphStore):
         if not self.puppygraph_url:
             raise GraphStoreError("puppygraph_url is not configured.")
         url = f"{self.puppygraph_url}{path}"
+        headers = {"x-puppygraph-warehouse": str(self.warehouse_path)}
         if self._external_client is not None:
-            resp = await self._external_client.post(url, json=payload)
+            resp = await self._external_client.post(url, json=payload, headers=headers)
         else:
             async with httpx.AsyncClient(
                 transport=self._transport, timeout=5.0
             ) as client:
-                resp = await client.post(url, json=payload)
+                resp = await client.post(url, json=payload, headers=headers)
         if resp.status_code >= 400:
             raise GraphStoreError(
                 f"PuppyGraph endpoint {path} failed with HTTP {resp.status_code}: {resp.text}"
@@ -565,15 +591,18 @@ class IcebergPuppyGraphStore(GraphStore):
     ) -> list[tuple[RelationshipEdge, EntityNode]]:
         self._fault.check(None)
         if self.puppygraph_url is not None:
+            candidate_ids = candidate_bucket_ids(node_id, self._num_buckets)
             data = await self._post_puppygraph(
                 "/cypher",
                 {
                     "query": (
-                        "MATCH (s:Entity {id: $id})-[r]-(t:Entity) "
+                        "MATCH (s:Entity)-[r]-(t:Entity) "
+                        "WHERE s.id IN $ids "
                         "RETURN r, t LIMIT $limit"
                     ),
                     "parameters": {
                         "id": node_id,
+                        "ids": candidate_ids,
                         "edge_types": edge_types or [],
                         "domains": [d.value for d in domains] if domains else [],
                         "direction": direction,
@@ -581,15 +610,42 @@ class IcebergPuppyGraphStore(GraphStore):
                     },
                 },
             )
+            allowed_types = set(edge_types) if edge_types else None
+            allowed_domains = set(domains) if domains else None
             pairs: list[tuple[RelationshipEdge, EntityNode]] = []
+            seen_keys: set[tuple[str, str, str]] = set()
             for item in data.get("neighbors", []):
-                pairs.append(
-                    (
-                        RelationshipEdge.model_validate(item["edge"]),
-                        EntityNode.model_validate(item["node"]),
-                    )
+                edge = RelationshipEdge.model_validate(item["edge"])
+                if edge.edge_type == BUCKET_EDGE_TYPE:
+                    continue
+                if allowed_types and edge.edge_type not in allowed_types:
+                    continue
+                edge = _unwrap_edge(edge)
+                neighbor_id = (
+                    edge.target_id if edge.source_id == node_id else edge.source_id
                 )
-            return pairs[:limit]
+                if neighbor_id == node_id:
+                    continue
+                key = (edge.source_id, edge.target_id, edge.edge_type)
+                if key in seen_keys:
+                    continue
+                node = EntityNode.model_validate(item["node"])
+                if (
+                    node.is_bucket
+                    or SupernodeBucketer.is_bucket_node_id(node.id)
+                    or node.id != neighbor_id
+                ):
+                    resolved = await self.get_node(neighbor_id)
+                    if resolved is None:
+                        continue
+                    node = resolved
+                if allowed_domains and node.domain not in allowed_domains:
+                    continue
+                seen_keys.add(key)
+                pairs.append((edge, node))
+                if len(pairs) >= limit:
+                    break
+            return pairs
 
         scanned_edge_files: set[Path] = set()
         all_edge_files = self._list_partition_files(self.edges_dir)
@@ -652,63 +708,47 @@ class IcebergPuppyGraphStore(GraphStore):
     async def _traverse_remote_puppygraph(
         self, request: TraversalRequest
     ) -> TraversalResult:
-        self._enforcer.validate_request(request)
+        tracker = self._enforcer.create_runtime_tracker(request)
+        effective_max_depth = min(request.max_depth, self._enforcer.config.max_depth)
         started = time.monotonic()
         if self.query_protocol == "gremlin":
-            query, params = self.build_gremlin_query(request)
+            query, params = self.build_gremlin_query(request, bucketed=True)
             data = await self._post_puppygraph(
                 "/gremlin", {"gremlin": query, "bindings": params}
             )
         else:
-            query, params = self.build_cypher_query(request)
+            query, params = self.build_cypher_query(request, bucketed=True)
             data = await self._post_puppygraph(
                 "/cypher", {"query": query, "parameters": params}
             )
 
-        nodes = [
+        raw_nodes = [
             EntityNode.model_validate(n)
-            for n in data.get("nodes", [])
-            if not n.get("is_bucket")
+            for n in data.get("nodes", data.get("vertices", []))
         ]
-        edges = [RelationshipEdge.model_validate(e) for e in data.get("edges", [])]
+        raw_edges = [RelationshipEdge.model_validate(e) for e in data.get("edges", [])]
         raw_paths: list[list[str]] = data.get("paths", [])
-
-        logical_paths: list[list[str]] = []
-        unwrapped_total = 0
-        max_depth = 0
-        for rp in raw_paths:
-            lp, unwrapped = SupernodeBucketer.unwrap_path(rp)
-            unwrapped_total += unwrapped
-            if len(lp) > 1:
-                logical_paths.append(lp)
-                max_depth = max(max_depth, len(lp) - 1)
-
-        cross_domain = sum(
-            1
-            for e in edges
-            if e.target_domain is not None and e.target_domain != e.domain
-        )
-        locality = round((len(edges) - cross_domain) / len(edges), 4) if edges else 1.0
         elapsed_ms = round((time.monotonic() - started) * 1000.0, 3)
 
-        return TraversalResult(
-            seed_ids=list(request.seed_ids),
-            nodes=nodes,
-            edges=edges,
-            paths=logical_paths,
-            metrics=TraversalMetrics(
-                depth_reached=data.get("depth_reached", max_depth),
-                nodes_expanded=data.get("nodes_expanded", len(nodes)),
-                results_returned=len(nodes),
-                execution_time_ms=elapsed_ms,
-                cross_domain_hops=cross_domain,
-                single_domain_locality_ratio=locality,
-                bucket_hops_unwrapped=data.get(
-                    "bucket_hops_unwrapped", unwrapped_total
-                ),
-                aborted=False,
-                violation=None,
+        return finalize_remote_traversal(
+            request,
+            tracker=tracker,
+            effective_max_depth=effective_max_depth,
+            raw_nodes=raw_nodes,
+            raw_edges=raw_edges,
+            raw_paths=raw_paths,
+            nodes_expanded_override=(
+                int(data["nodes_expanded"]) if "nodes_expanded" in data else None
             ),
+            depth_reached_override=(
+                int(data["depth_reached"]) if "depth_reached" in data else None
+            ),
+            bucket_hops_override=(
+                int(data["bucket_hops_unwrapped"])
+                if "bucket_hops_unwrapped" in data
+                else None
+            ),
+            execution_time_ms=elapsed_ms,
         )
 
     async def set_fault_mode(
@@ -810,5 +850,6 @@ class IcebergPuppyGraphStore(GraphStore):
         self._cumulative_total_partitions = 0
         self._cumulative_scanned_partitions = 0
         self._snapshot_seq = 0
+        self._has_buckets = False
         self._fault.configure(FaultMode.NONE)
         self._ensure_layout()

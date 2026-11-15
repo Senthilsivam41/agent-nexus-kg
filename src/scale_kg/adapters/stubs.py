@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from scale_kg.adapters.base import AdapterCostProfile, HealthStatus
+from scale_kg.adapters.base import (
+    AdapterCostProfile,
+    HealthStatus,
+    validate_edge_types,
+    validate_safe_query_identifier,
+    validate_seed_ids,
+)
 from scale_kg.adapters.in_memory import InMemoryGraphStore
 from scale_kg.core.guardrails import GuardrailEnforcer
 from scale_kg.core.models import TraversalRequest
@@ -63,11 +69,8 @@ class JanusGraphStore(_ContractStubBase):
         """Build a bounded Gremlin traversal string for JanusGraph."""
         depth = min(request.max_depth, self._enforcer.config.max_depth)
         limit = min(request.max_results, self._enforcer.config.max_results)
-        edge_arg = (
-            ", ".join(f"'{et}'" for et in request.edge_types)
-            if request.edge_types
-            else ""
-        )
+        edge_types = validate_edge_types(request.edge_types)
+        edge_arg = ", ".join(f"'{et}'" for et in edge_types) if edge_types else ""
         script = (
             "g.V().has('global_id', within(seed_ids))"
             f".repeat(outE({edge_arg}).inV()).times({depth}).emit()"
@@ -105,7 +108,9 @@ class NebulaGraphStore(_ContractStubBase):
         super().__init__(enforcer=enforcer, num_buckets=num_buckets)
         self.graphd_hosts = graphd_hosts or ["localhost:9669"]
         self.meta_hosts = meta_hosts or ["localhost:9559"]
-        self.space_name = space_name
+        self.space_name = validate_safe_query_identifier(
+            space_name, field_name="space_name"
+        )
 
     def cost_profile(self) -> AdapterCostProfile:
         return AdapterCostProfile(
@@ -123,20 +128,19 @@ class NebulaGraphStore(_ContractStubBase):
 
     def build_ngql_query(self, request: TraversalRequest) -> tuple[str, dict[str, Any]]:
         """Build a bounded nGQL GO/MATCH traversal statement for NebulaGraph."""
+        space = validate_safe_query_identifier(self.space_name, field_name="space_name")
         depth = min(request.max_depth, self._enforcer.config.max_depth)
         limit = min(request.max_results, self._enforcer.config.max_results)
-        edge_clause = (
-            " OVER " + ", ".join(request.edge_types)
-            if request.edge_types
-            else " OVER *"
-        )
-        seeds = ", ".join(f"'{sid}'" for sid in request.seed_ids)
+        edge_types = validate_edge_types(request.edge_types)
+        seed_ids = validate_seed_ids(request.seed_ids)
+        edge_clause = " OVER " + ", ".join(edge_types) if edge_types else " OVER *"
+        seeds = ", ".join(f"'{sid}'" for sid in seed_ids)
         ngql = (
-            f"USE {self.space_name}; "
+            f"USE {space}; "
             f"GO 1 TO {depth} STEPS FROM {seeds}{edge_clause} "
             f"YIELD edge AS e, dst(edge) AS dst | LIMIT {limit};"
         )
-        return ngql, {"space": self.space_name, "limit": limit}
+        return ngql, {"space": space, "limit": limit}
 
     async def health_check(self) -> HealthStatus:
         status = await super().health_check()

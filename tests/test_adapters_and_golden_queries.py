@@ -180,14 +180,19 @@ class _HugeGraphMockTransport(httpx.AsyncBaseTransport):
                 edge_types = None
             else:
                 seed_ids = body["sources"]["ids"]
-                depth = body["max_depth"]
+                depth = body.get("logical_max_depth", min(body["max_depth"], 3))
                 limit = body["limit"]
                 domains = (
                     [Domain(d) for d in body["domains"]]
                     if body.get("domains")
                     else None
                 )
-                edge_types = body["steps"]["labels"] or None
+                raw_labels = [
+                    lbl
+                    for lbl in (body["steps"]["labels"] or [])
+                    if lbl != "BUCKET_LINK"
+                ]
+                edge_types = raw_labels or None
 
             res = await self.backing.traverse_k_hop(
                 TraversalRequest(
@@ -296,7 +301,9 @@ class _Neo4jMockSession:
             )
 
         if "MATCH p = (s:Entity)-[r:REL*1.." in query:
-            depth = int(query.split("*1..", 1)[1].split("]", 1)[0])
+            depth = int(
+                params.get("max_depth") or query.split("*1..", 1)[1].split("]", 1)[0]
+            )
             edge_types = params["edge_types"] or None
             domains = (
                 [Domain(d) for d in params["domains"]] if params["domains"] else None
@@ -314,7 +321,10 @@ class _Neo4jMockSession:
             if not res.nodes:
                 return _Neo4jMockResult([])
             # Return shard-local paths including proxy nodes for cross-shard continuation
-            nodes_by_id = {n.id: n for n in res.nodes}
+            nodes_by_id: dict[str, EntityNode] = {}
+            for n in res.nodes:
+                nodes_by_id[n.id] = n
+                nodes_by_id.setdefault(SupernodeBucketer.unwrap_bucket_id(n.id), n)
             rows = []
             for p in res.paths:
                 p_nodes = [
@@ -713,3 +723,116 @@ class TestNeo4jAndStubsSpecifics:
         )
         assert "GO 1 TO 3 STEPS" in ngql and "LIMIT 5000" in ngql
         assert n_params["space"] == "scale_kg"
+
+    async def test_remote_query_builders_reject_injection_payloads(
+        self, tmp_path: Path
+    ) -> None:
+        puppy = IcebergPuppyGraphStore(tmp_path / "warehouse")
+        huge = HugeGraphStore(base_url="http://hugegraph.mock")
+        janus = JanusGraphStore()
+        nebula = NebulaGraphStore()
+
+        injected_edge_req = TraversalRequest(
+            seed_ids=["customer:org:1"],
+            max_depth=2,
+            edge_types=["USES'] } ) //"],
+        )
+        for builder in (
+            puppy.build_cypher_query,
+            puppy.build_gremlin_query,
+            huge.build_gremlin_traversal,
+            huge.build_opencypher_traversal,
+            janus.build_gremlin_query,
+            nebula.build_ngql_query,
+        ):
+            with pytest.raises(ValueError, match="Unsafe edge_type"):
+                builder(injected_edge_req)
+
+        injected_seed_req = TraversalRequest(
+            seed_ids=["a'; DROP SPACE scale_kg;"],
+            max_depth=2,
+            edge_types=["USES"],
+        )
+        with pytest.raises(ValueError, match="Unsafe seed_id"):
+            nebula.build_ngql_query(injected_seed_req)
+
+        with pytest.raises(ValueError, match="Unsafe space_name"):
+            NebulaGraphStore(space_name="scale_kg; DROP SPACE scale_kg")
+
+        nebula.space_name = "scale_kg; DROP SPACE scale_kg"
+        with pytest.raises(ValueError, match="Unsafe space_name"):
+            nebula.build_ngql_query(
+                TraversalRequest(seed_ids=["customer:org:1"], max_depth=1)
+            )
+
+    async def test_bucketed_remote_traversals_neighbors_and_golden_parity(
+        self, tmp_path: Path
+    ) -> None:
+        from scale_kg.benchmark import GoldenQuerySuite
+
+        driver = _Neo4jMockDriver()
+        neo4j = Neo4jGraphStore(driver=driver)
+        hg_transport = _HugeGraphMockTransport()
+        huge = HugeGraphStore("http://hugegraph.mock", transport=hg_transport)
+        stores: dict[str, GraphStore] = {
+            "in_memory": InMemoryGraphStore(),
+            "iceberg_puppygraph": IcebergPuppyGraphStore(tmp_path / "golden_wh"),
+            "hugegraph": huge,
+            "neo4j": neo4j,
+        }
+        suite = GoldenQuerySuite(bucket_supernodes=True)
+        report = await suite.run_parity(stores)
+        report.assert_parity()
+
+        # Verify Neo4j and HugeGraph get_neighbors expand ::bucket::0..15 and unwrap edges
+        neo_neighbors = await neo4j.get_neighbors(
+            "technology:lang:python", direction="out"
+        )
+        assert {
+            (e.source_id, e.target_id, e.edge_type, n.id) for e, n in neo_neighbors
+        } == {
+            (
+                "technology:lang:python",
+                "technology:lib:pydantic",
+                "DEPENDS_ON",
+                "technology:lib:pydantic",
+            ),
+            (
+                "technology:lang:python",
+                "product:sdk:kinetic",
+                "POWERS",
+                "product:sdk:kinetic",
+            ),
+        }
+        hg_neighbors = await huge.get_neighbors(
+            "technology:lang:python", direction="out"
+        )
+        assert {
+            (e.source_id, e.target_id, e.edge_type, n.id) for e, n in hg_neighbors
+        } == {
+            (
+                "technology:lang:python",
+                "technology:lib:pydantic",
+                "DEPENDS_ON",
+                "technology:lib:pydantic",
+            ),
+            (
+                "technology:lang:python",
+                "product:sdk:kinetic",
+                "POWERS",
+                "product:sdk:kinetic",
+            ),
+        }
+
+        # Verify bucketed query builders scale physical depth to depth * 3 and include BUCKET_LINK
+        req2 = TraversalRequest(
+            seed_ids=["customer:org:acme"], max_depth=2, edge_types=["USES"]
+        )
+        neo_cypher, _ = neo4j.build_k_hop_cypher(req2)
+        assert "*1..6" in neo_cypher and "BUCKET_LINK" in neo_cypher
+        hg_gremlin, _ = huge.build_gremlin_traversal(req2)
+        assert ".times(6)" in hg_gremlin and "BUCKET_LINK" in hg_gremlin
+        hg_cypher, _ = huge.build_opencypher_traversal(req2)
+        assert "*1..6" in hg_cypher and "BUCKET_LINK" in hg_cypher
+        hg_rest = huge.build_rest_kneighbor_payload(req2)
+        assert hg_rest["max_depth"] == 6 and "BUCKET_LINK" in hg_rest["steps"]["labels"]

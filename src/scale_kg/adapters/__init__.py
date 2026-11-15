@@ -10,17 +10,25 @@ from scale_kg.adapters.base import (
     GraphStoreUnavailableError,
     HealthStatus,
 )
+from scale_kg.adapters.container_server import (
+    ContainerTransport,
+    HugeGraphContainerApp,
+    Neo4jContainerApp,
+    PuppyGraphContainerApp,
+    create_app,
+)
 from scale_kg.adapters.hugegraph_adapter import HugeGraphStore
 from scale_kg.adapters.iceberg_puppygraph import (
     IcebergPuppyGraphStore,
     PartitionScanStats,
 )
 from scale_kg.adapters.in_memory import InMemoryGraphStore
-from scale_kg.adapters.neo4j_adapter import Neo4jGraphStore
+from scale_kg.adapters.neo4j_adapter import HttpCypherDriver, Neo4jGraphStore
 from scale_kg.adapters.stubs import JanusGraphStore, NebulaGraphStore
 
 __all__ = [
     "AdapterCostProfile",
+    "ContainerTransport",
     "FaultMode",
     "FaultState",
     "GraphStats",
@@ -28,11 +36,16 @@ __all__ = [
     "GraphStoreError",
     "GraphStoreUnavailableError",
     "HealthStatus",
+    "HttpCypherDriver",
+    "HugeGraphContainerApp",
     "HugeGraphStore",
     "IcebergPuppyGraphStore",
     "InMemoryGraphStore",
     "JanusGraphStore",
     "NebulaGraphStore",
+    "Neo4jContainerApp",
     "Neo4jGraphStore",
     "PartitionScanStats",
+    "PuppyGraphContainerApp",
+    "create_app",
 ]

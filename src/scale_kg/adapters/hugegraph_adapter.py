@@ -9,6 +9,11 @@ from urllib.parse import quote
 
 import httpx
 
+from scale_kg.adapters._traversal import (
+    _unwrap_edge,
+    candidate_bucket_ids,
+    finalize_remote_traversal,
+)
 from scale_kg.adapters.base import (
     AdapterCostProfile,
     FaultMode,
@@ -19,13 +24,13 @@ from scale_kg.adapters.base import (
     GraphStoreUnavailableError,
     HealthStatus,
     canonical_domain_from_id,
+    validate_edge_types,
 )
 from scale_kg.core.guardrails import GuardrailEnforcer
 from scale_kg.core.models import (
     Domain,
     EntityNode,
     RelationshipEdge,
-    TraversalMetrics,
     TraversalRequest,
     TraversalResult,
 )
@@ -62,6 +67,7 @@ class HugeGraphStore(GraphStore):
         self.query_mode = query_mode
         self._enforcer = enforcer or GuardrailEnforcer()
         self._num_buckets = num_buckets
+        self._has_buckets = False
         self._fault = FaultState()
         self._transport = transport
         self._external_client = http_client
@@ -250,6 +256,8 @@ class HugeGraphStore(GraphStore):
             return 0
         by_domain: dict[Domain, list[dict[str, Any]]] = {}
         for node in nodes:
+            if node.is_bucket or SupernodeBucketer.is_bucket_node_id(node.id):
+                self._has_buckets = True
             by_domain.setdefault(node.domain, []).append(self._serialize_vertex(node))
         for domain, batch in by_domain.items():
             await self._request(
@@ -267,6 +275,12 @@ class HugeGraphStore(GraphStore):
             return 0
         by_domain: dict[Domain, list[dict[str, Any]]] = {}
         for edge in edges:
+            if (
+                edge.edge_type == BUCKET_EDGE_TYPE
+                or SupernodeBucketer.is_bucket_node_id(edge.source_id)
+                or SupernodeBucketer.is_bucket_node_id(edge.target_id)
+            ):
+                self._has_buckets = True
             by_domain.setdefault(edge.domain, []).append(self._serialize_edge(edge))
         for domain, batch in by_domain.items():
             await self._request(
@@ -298,72 +312,86 @@ class HugeGraphStore(GraphStore):
         direction: Literal["out", "in", "both"] = "out",
         limit: int = 5000,
     ) -> list[tuple[RelationshipEdge, EntityNode]]:
-        data = await self._request(
-            "GET",
-            f"/graphs/{self.graph_name}/traversers/edges",
-            params={
-                "vertex_id": node_id,
-                "direction": direction.upper(),
-                "limit": limit,
-                "tenant": self.tenant_id,
-                **({"labels": ",".join(edge_types)} if edge_types else {}),
-                **({"domains": ",".join(d.value for d in domains)} if domains else {}),
-            },
-            domain=canonical_domain_from_id(node_id),
-        )
-        raw_edges = data.get("edges", [])
-        raw_vertices = {
-            str(v["id"]): self._deserialize_vertex(v) for v in data.get("vertices", [])
-        }
-
+        candidate_ids = candidate_bucket_ids(node_id, self._num_buckets)
         allowed_domains = set(domains) if domains else None
         allowed_types = set(edge_types) if edge_types else None
         results: list[tuple[RelationshipEdge, EntityNode]] = []
         seen_keys: set[tuple[str, str, str]] = set()
+        domain_hint = canonical_domain_from_id(node_id)
 
-        for raw_edge in raw_edges:
-            edge = self._deserialize_edge(raw_edge)
-            if edge.edge_type == BUCKET_EDGE_TYPE:
-                continue
-            if allowed_types and edge.edge_type not in allowed_types:
-                continue
-            logical_src = SupernodeBucketer.unwrap_bucket_id(edge.source_id)
-            logical_dst = SupernodeBucketer.unwrap_bucket_id(edge.target_id)
-            if logical_src != edge.source_id or logical_dst != edge.target_id:
-                edge = edge.model_copy(
-                    update={"source_id": logical_src, "target_id": logical_dst}
-                )
-            neighbor_id = (
-                edge.target_id if edge.source_id == node_id else edge.source_id
-            )
-            key = (edge.source_id, edge.target_id, edge.edge_type)
-            if key in seen_keys:
-                continue
-            neighbor = raw_vertices.get(neighbor_id) or await self.get_node(neighbor_id)
-            if neighbor is None:
-                continue
-            if allowed_domains and neighbor.domain not in allowed_domains:
-                continue
-            seen_keys.add(key)
-            results.append((edge, neighbor))
+        for cid in candidate_ids:
             if len(results) >= limit:
                 break
+            data = await self._request(
+                "GET",
+                f"/graphs/{self.graph_name}/traversers/edges",
+                params={
+                    "vertex_id": cid,
+                    "direction": direction.upper(),
+                    "limit": limit,
+                    "tenant": self.tenant_id,
+                    **({"labels": ",".join(edge_types)} if edge_types else {}),
+                    **(
+                        {"domains": ",".join(d.value for d in domains)}
+                        if domains
+                        else {}
+                    ),
+                },
+                domain=domain_hint,
+            )
+            raw_edges = data.get("edges", [])
+            raw_vertices = {
+                str(v["id"]): self._deserialize_vertex(v)
+                for v in data.get("vertices", [])
+            }
+
+            for raw_edge in raw_edges:
+                edge = self._deserialize_edge(raw_edge)
+                if edge.edge_type == BUCKET_EDGE_TYPE:
+                    continue
+                if allowed_types and edge.edge_type not in allowed_types:
+                    continue
+                edge = _unwrap_edge(edge)
+                neighbor_id = (
+                    edge.target_id if edge.source_id == node_id else edge.source_id
+                )
+                if neighbor_id == node_id:
+                    continue
+                key = (edge.source_id, edge.target_id, edge.edge_type)
+                if key in seen_keys:
+                    continue
+                neighbor = raw_vertices.get(neighbor_id) or await self.get_node(
+                    neighbor_id
+                )
+                if (
+                    neighbor is None
+                    or neighbor.is_bucket
+                    or SupernodeBucketer.is_bucket_node_id(neighbor.id)
+                ):
+                    continue
+                if allowed_domains and neighbor.domain not in allowed_domains:
+                    continue
+                seen_keys.add(key)
+                results.append((edge, neighbor))
+                if len(results) >= limit:
+                    break
         return results
 
     def build_gremlin_traversal(
-        self, request: TraversalRequest
+        self, request: TraversalRequest, *, bucketed: bool | None = None
     ) -> tuple[str, dict[str, Any]]:
         """Build a bounded Gremlin traversal script with tenant/domain bindings."""
+        use_buckets = self._has_buckets if bucketed is None else bucketed
         depth = min(request.max_depth, self._enforcer.config.max_depth)
+        physical_depth = depth * 3 if use_buckets else depth
         limit = min(request.max_results, self._enforcer.config.max_results)
-        edge_filter = (
-            ", ".join(f"'{et}'" for et in request.edge_types)
-            if request.edge_types
-            else ""
-        )
+        edge_types = validate_edge_types(request.edge_types)
+        if edge_types and use_buckets and BUCKET_EDGE_TYPE not in edge_types:
+            edge_types = [*edge_types, BUCKET_EDGE_TYPE]
+        edge_filter = ", ".join(f"'{et}'" for et in edge_types) if edge_types else ""
         script = (
             "g.V(seed_ids).has('tenant', tenant)"
-            f".repeat(outE({edge_filter}).inV()).times({depth}).emit()"
+            f".repeat(outE({edge_filter}).inV()).times({physical_depth}).emit()"
             f".path().limit({limit})"
         )
         bindings: dict[str, Any] = {
@@ -376,19 +404,24 @@ class HugeGraphStore(GraphStore):
         return script, bindings
 
     def build_opencypher_traversal(
-        self, request: TraversalRequest
+        self, request: TraversalRequest, *, bucketed: bool | None = None
     ) -> tuple[str, dict[str, Any]]:
         """Build a bounded OpenCypher traversal query for HugeGraph."""
+        use_buckets = self._has_buckets if bucketed is None else bucketed
         depth = min(request.max_depth, self._enforcer.config.max_depth)
+        physical_depth = depth * 3 if use_buckets else depth
         limit = min(request.max_results, self._enforcer.config.max_results)
-        rel_clause = ":" + "|".join(request.edge_types) if request.edge_types else ""
+        edge_types = validate_edge_types(request.edge_types)
+        if edge_types and use_buckets and BUCKET_EDGE_TYPE not in edge_types:
+            edge_types = [*edge_types, BUCKET_EDGE_TYPE]
+        rel_clause = ":" + "|".join(edge_types) if edge_types else ""
         domain_clause = (
             " AND ALL(n IN nodes(p) WHERE n.domain IN $domains)"
             if request.domains
             else ""
         )
         cypher = (
-            f"MATCH p=(s)-[r{rel_clause}*1..{depth}]->(t) "
+            f"MATCH p=(s)-[r{rel_clause}*1..{physical_depth}]->(t) "
             f"WHERE s.id IN $seed_ids AND s.tenant = $tenant{domain_clause} "
             f"RETURN p LIMIT {limit}"
         )
@@ -401,18 +434,26 @@ class HugeGraphStore(GraphStore):
         }
         return cypher, params
 
-    def build_rest_kneighbor_payload(self, request: TraversalRequest) -> dict[str, Any]:
+    def build_rest_kneighbor_payload(
+        self, request: TraversalRequest, *, bucketed: bool | None = None
+    ) -> dict[str, Any]:
         """Build a HugeGraph REST /traversers/kneighbor request payload."""
+        use_buckets = self._has_buckets if bucketed is None else bucketed
         depth = min(request.max_depth, self._enforcer.config.max_depth)
+        physical_depth = depth * 3 if use_buckets else depth
         limit = min(request.max_results, self._enforcer.config.max_results)
+        edge_types = validate_edge_types(request.edge_types)
+        if edge_types and use_buckets and BUCKET_EDGE_TYPE not in edge_types:
+            edge_types = [*edge_types, BUCKET_EDGE_TYPE]
         return {
             "sources": {"ids": list(request.seed_ids)},
             "steps": {
                 "direction": "OUT",
-                "labels": list(request.edge_types) if request.edge_types else [],
+                "labels": edge_types,
                 "properties": {"tenant": self.tenant_id},
             },
-            "max_depth": depth,
+            "max_depth": physical_depth,
+            "logical_max_depth": depth,
             "limit": limit,
             "domains": [d.value for d in request.domains] if request.domains else [],
             "with_vertex": True,
@@ -422,6 +463,7 @@ class HugeGraphStore(GraphStore):
 
     async def traverse_k_hop(self, request: TraversalRequest) -> TraversalResult:
         tracker = self._enforcer.create_runtime_tracker(request)
+        effective_max_depth = min(request.max_depth, self._enforcer.config.max_depth)
         domain_hint = (
             request.domains[0]
             if request.domains and len(request.domains) == 1
@@ -430,7 +472,7 @@ class HugeGraphStore(GraphStore):
         started = time.monotonic()
 
         if self.query_mode == "gremlin":
-            script, bindings = self.build_gremlin_traversal(request)
+            script, bindings = self.build_gremlin_traversal(request, bucketed=True)
             data = await self._request(
                 "POST",
                 f"/graphs/{self.graph_name}/gremlin",
@@ -438,7 +480,7 @@ class HugeGraphStore(GraphStore):
                 domain=domain_hint,
             )
         elif self.query_mode == "opencypher":
-            cypher, params = self.build_opencypher_traversal(request)
+            cypher, params = self.build_opencypher_traversal(request, bucketed=True)
             data = await self._request(
                 "POST",
                 f"/graphs/{self.graph_name}/cypher",
@@ -446,7 +488,7 @@ class HugeGraphStore(GraphStore):
                 domain=domain_hint,
             )
         else:
-            payload = self.build_rest_kneighbor_payload(request)
+            payload = self.build_rest_kneighbor_payload(request, bucketed=True)
             data = await self._request(
                 "POST",
                 f"/graphs/{self.graph_name}/traversers/kneighbor",
@@ -458,83 +500,21 @@ class HugeGraphStore(GraphStore):
             self._deserialize_vertex(v)
             for v in data.get("vertices", data.get("nodes", []))
         ]
-        nodes = [n for n in raw_nodes if not n.is_bucket]
-
         raw_edges = [self._deserialize_edge(e) for e in data.get("edges", [])]
-        edges: list[RelationshipEdge] = []
-        seen_edge_keys: set[tuple[str, str, str]] = set()
-        for edge in raw_edges:
-            if edge.edge_type == BUCKET_EDGE_TYPE:
-                continue
-            if edge.is_derived and not request.include_derived:
-                continue
-            unwrapped = edge.model_copy(
-                update={
-                    "source_id": SupernodeBucketer.unwrap_bucket_id(edge.source_id),
-                    "target_id": SupernodeBucketer.unwrap_bucket_id(edge.target_id),
-                }
-            )
-            key = (unwrapped.source_id, unwrapped.target_id, unwrapped.edge_type)
-            if key not in seen_edge_keys:
-                seen_edge_keys.add(key)
-                edges.append(unwrapped)
-
-        logical_paths: list[list[str]] = []
-        seen_paths: set[tuple[str, ...]] = set()
-        unwrapped_hops_total = 0
-        depth_reached = 0
-        for raw_path in data.get("paths", []):
-            logical_path, bucket_hops = SupernodeBucketer.unwrap_path(
-                [str(vertex_id) for vertex_id in raw_path]
-            )
-            unwrapped_hops_total += bucket_hops
-            if len(logical_path) > 1 and tuple(logical_path) not in seen_paths:
-                seen_paths.add(tuple(logical_path))
-                logical_paths.append(logical_path)
-                depth_reached = max(depth_reached, len(logical_path) - 1)
-
-        nodes_expanded = int(data.get("nodes_expanded", len(raw_nodes)))
-        violation = tracker.check_step(
-            depth=depth_reached,
-            expanded_nodes=nodes_expanded,
-            results_count=len(nodes),
-        )
-        cross_domain = sum(
-            1
-            for e in edges
-            if e.target_domain is not None and e.target_domain != e.domain
-        )
-        locality = round((len(edges) - cross_domain) / len(edges), 4) if edges else 1.0
-        if violation is not None:
-            return tracker.build_aborted_result(
-                violation=violation,
-                nodes=nodes[: request.max_results],
-                edges=edges,
-                paths=logical_paths,
-                depth_reached=depth_reached,
-                expanded_nodes=nodes_expanded,
-                cross_domain_hops=cross_domain,
-                single_domain_locality_ratio=locality,
-                bucket_hops_unwrapped=unwrapped_hops_total,
-            )
-
+        raw_paths = data.get("paths", [])
         elapsed_ms = round((time.monotonic() - started) * 1000.0, 3)
-        return TraversalResult(
-            seed_ids=list(request.seed_ids),
-            nodes=nodes,
-            edges=edges,
-            paths=logical_paths,
-            metrics=TraversalMetrics(
-                depth_reached=depth_reached,
-                nodes_expanded=nodes_expanded,
-                results_returned=len(nodes),
-                execution_time_ms=elapsed_ms,
-                cross_domain_hops=cross_domain,
-                single_domain_locality_ratio=locality,
-                bucket_hops_unwrapped=unwrapped_hops_total,
-                aborted=False,
-                violation=None,
+
+        return finalize_remote_traversal(
+            request,
+            tracker=tracker,
+            effective_max_depth=effective_max_depth,
+            raw_nodes=raw_nodes,
+            raw_edges=raw_edges,
+            raw_paths=raw_paths,
+            nodes_expanded_override=(
+                int(data["nodes_expanded"]) if "nodes_expanded" in data else None
             ),
+            execution_time_ms=elapsed_ms,
         )
 
     async def set_fault_mode(
@@ -594,4 +574,5 @@ class HugeGraphStore(GraphStore):
             f"/graphs/{self.graph_name}/clear",
             json_body={"confirm_message": "I'm sure to delete all data"},
         )
+        self._has_buckets = False
         self._fault.configure(FaultMode.NONE)

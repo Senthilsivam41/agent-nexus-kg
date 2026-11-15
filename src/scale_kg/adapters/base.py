@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Literal
@@ -15,6 +16,38 @@ from scale_kg.core.models import (
     TraversalRequest,
     TraversalResult,
 )
+
+_SAFE_QUERY_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SAFE_SEED_ID_RE = re.compile(r"^[A-Za-z0-9_.:/-]+$")
+
+
+def validate_safe_query_identifier(
+    value: str, *, field_name: str = "identifier"
+) -> str:
+    """Validate that a schema/edge/space identifier is safe for query formatting."""
+    if not isinstance(value, str) or not _SAFE_QUERY_IDENTIFIER_RE.fullmatch(value):
+        raise ValueError(
+            f"Unsafe {field_name} {value!r}: must match {_SAFE_QUERY_IDENTIFIER_RE.pattern}."
+        )
+    return value
+
+
+def validate_edge_types(edge_types: list[str] | None) -> list[str]:
+    """Validate a list of edge type labels for safe inline query formatting."""
+    return [
+        validate_safe_query_identifier(et, field_name="edge_type")
+        for et in (edge_types or [])
+    ]
+
+
+def validate_seed_ids(seed_ids: list[str]) -> list[str]:
+    """Validate vertex seed IDs for safe inline query formatting."""
+    for sid in seed_ids:
+        if not isinstance(sid, str) or not _SAFE_SEED_ID_RE.fullmatch(sid):
+            raise ValueError(
+                f"Unsafe seed_id {sid!r}: must match {_SAFE_SEED_ID_RE.pattern}."
+            )
+    return list(seed_ids)
 
 
 class FaultMode(str, Enum):

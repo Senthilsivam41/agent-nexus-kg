@@ -7,6 +7,9 @@ import time
 from types import TracebackType
 from typing import Any, Literal, Protocol, Self
 
+import httpx
+
+from scale_kg.adapters._traversal import _unwrap_edge, candidate_bucket_ids
 from scale_kg.adapters.base import (
     AdapterCostProfile,
     FaultMode,
@@ -17,6 +20,7 @@ from scale_kg.adapters.base import (
     GraphStoreUnavailableError,
     HealthStatus,
     canonical_domain_from_id,
+    validate_edge_types,
 )
 from scale_kg.core.guardrails import GuardrailEnforcer
 from scale_kg.core.models import (
@@ -63,6 +67,102 @@ class AsyncCypherDriver(Protocol):
     async def close(self) -> None: ...
 
 
+class _HttpCypherResult:
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self._rows = rows
+
+    async def data(self) -> list[dict[str, Any]]:
+        return self._rows
+
+
+class _HttpCypherSession:
+    def __init__(
+        self,
+        base_url: str,
+        database: str,
+        auth: tuple[str, str],
+        transport: httpx.AsyncBaseTransport | None,
+    ) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._database = database
+        self._auth = auth
+        self._transport = transport
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        return None
+
+    async def run(
+        self, query: str, parameters: dict[str, Any] | None = None
+    ) -> _HttpCypherResult:
+        async with httpx.AsyncClient(
+            base_url=self._base_url,
+            auth=self._auth,
+            timeout=2.0,
+            transport=self._transport,
+        ) as client:
+            resp = await client.post(
+                f"/db/{self._database}/tx/commit",
+                json={"query": query, "parameters": parameters or {}},
+            )
+            if resp.status_code >= 500:
+                raise GraphStoreUnavailableError(
+                    f"Neo4j HTTP Cypher returned {resp.status_code}: {resp.text}"
+                )
+            if resp.status_code >= 400:
+                raise GraphStoreError(
+                    f"Neo4j HTTP Cypher error ({resp.status_code}): {resp.text}"
+                )
+            body = resp.json()
+            return _HttpCypherResult(body.get("rows", body.get("data", [])))
+
+
+class HttpCypherDriver:
+    """Async HTTP Cypher driver for containerized Neo4j endpoints."""
+
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        auth: tuple[str, str] = ("neo4j", "password"),
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.auth = auth
+        self.transport = transport
+
+    def session(self, *, database: str | None = None) -> _HttpCypherSession:
+        return _HttpCypherSession(
+            self.base_url,
+            database or "composite",
+            self.auth,
+            self.transport,
+        )
+
+    async def verify_connectivity(self) -> None:
+        async with httpx.AsyncClient(
+            base_url=self.base_url,
+            auth=self.auth,
+            timeout=2.0,
+            transport=self.transport,
+        ) as client:
+            resp = await client.get("/health")
+            if resp.status_code >= 400:
+                raise GraphStoreUnavailableError(
+                    f"Neo4j health endpoint returned {resp.status_code}"
+                )
+
+    async def close(self) -> None:
+        return None
+
+
 class Neo4jGraphStore(GraphStore):
     """Baseline async Neo4j adapter with Composite shard routing and proxy nodes."""
 
@@ -76,7 +176,9 @@ class Neo4jGraphStore(GraphStore):
         database: str = "composite",
         shard_databases: dict[Domain, str] | None = None,
         driver: AsyncCypherDriver | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
         enforcer: GuardrailEnforcer | None = None,
+        num_buckets: int = 16,
     ) -> None:
         self.uri = uri
         self.auth = auth
@@ -85,8 +187,11 @@ class Neo4jGraphStore(GraphStore):
             d: f"kg_{d.value}" for d in Domain
         }
         self._driver: AsyncCypherDriver | None = driver
+        self._transport = transport
         self._enforcer = enforcer or GuardrailEnforcer()
         self._fault = FaultState()
+        self._num_buckets = num_buckets
+        self._has_buckets = False
 
     def cost_profile(self) -> AdapterCostProfile:
         return AdapterCostProfile(
@@ -103,6 +208,11 @@ class Neo4jGraphStore(GraphStore):
 
     def _get_driver(self) -> AsyncCypherDriver:
         if self._driver is not None:
+            return self._driver
+        if self.uri.startswith(("http://", "https://")):
+            self._driver = HttpCypherDriver(
+                self.uri, auth=self.auth, transport=self._transport
+            )
             return self._driver
         try:
             from neo4j import AsyncGraphDatabase  # type: ignore[import-not-found]
@@ -179,41 +289,55 @@ class Neo4jGraphStore(GraphStore):
         limit: int = 5000,
     ) -> str:
         if direction == "out":
-            pattern = "(s:Entity {id: $node_id})-[r:REL]->(t:Entity)"
+            pattern = "(s:Entity)-[r:REL]->(t:Entity)"
         elif direction == "in":
-            pattern = "(s:Entity {id: $node_id})<-[r:REL]-(t:Entity)"
+            pattern = "(s:Entity)<-[r:REL]-(t:Entity)"
         else:
-            pattern = "(s:Entity {id: $node_id})-[r:REL]-(t:Entity)"
+            pattern = "(s:Entity)-[r:REL]-(t:Entity)"
         return (
             f"MATCH {pattern} "
-            "WHERE ($edge_types_empty OR r.edge_type IN $edge_types) "
-            "AND ($domains_empty OR t.domain IN $domains) "
+            f"WHERE s.id IN $node_ids AND r.edge_type <> '{BUCKET_EDGE_TYPE}' "
+            "AND ($edge_types_empty OR r.edge_type IN $edge_types) "
+            "AND ($domains_empty OR t.domain IN $domains OR coalesce(t.is_proxy, false) = true) "
             f"RETURN r, t LIMIT {limit}"
         )
 
     def build_k_hop_cypher(
-        self, request: TraversalRequest, *, max_depth_override: int | None = None
+        self,
+        request: TraversalRequest,
+        *,
+        max_depth_override: int | None = None,
+        bucketed: bool | None = None,
     ) -> tuple[str, dict[str, Any]]:
         """Build a bounded parameterized Cypher k-hop traversal query."""
         depth = max_depth_override or min(
             request.max_depth, self._enforcer.config.max_depth
         )
+        use_buckets = self._has_buckets if bucketed is None else bucketed
+        physical_depth = depth * 3 if use_buckets else depth
         limit = min(request.max_results, self._enforcer.config.max_results)
+        edge_types = validate_edge_types(request.edge_types)
+        edge_predicate = (
+            f"rel.edge_type IN $edge_types OR rel.edge_type = '{BUCKET_EDGE_TYPE}'"
+            if use_buckets
+            else "rel.edge_type IN $edge_types"
+        )
         cypher = (
-            f"MATCH p = (s:Entity)-[r:REL*1..{depth}]->(t:Entity) "
+            f"MATCH p = (s:Entity)-[r:REL*1..{physical_depth}]->(t:Entity) "
             "WHERE s.id IN $seed_ids "
-            "AND ($edge_types_empty OR ALL(rel IN relationships(p) WHERE rel.edge_type IN $edge_types)) "
+            f"AND ($edge_types_empty OR ALL(rel IN relationships(p) WHERE {edge_predicate})) "
             "AND ($domains_empty OR ALL(n IN nodes(p) WHERE n.domain IN $domains OR n.is_proxy = true)) "
             "AND ($include_derived OR ALL(rel IN relationships(p) WHERE coalesce(rel.is_derived, false) = false)) "
             f"RETURN nodes(p) AS nodes, relationships(p) AS edges, [n IN nodes(p) | n.id] AS path LIMIT {limit}"
         )
         params: dict[str, Any] = {
             "seed_ids": list(request.seed_ids),
-            "edge_types": list(request.edge_types) if request.edge_types else [],
-            "edge_types_empty": not bool(request.edge_types),
+            "edge_types": edge_types,
+            "edge_types_empty": not bool(edge_types),
             "domains": [d.value for d in request.domains] if request.domains else [],
             "domains_empty": not bool(request.domains),
             "include_derived": request.include_derived,
+            "max_depth": depth,
             "limit": limit,
         }
         return cypher, params
@@ -310,6 +434,8 @@ class Neo4jGraphStore(GraphStore):
             return 0
         by_domain: dict[Domain, list[dict[str, Any]]] = {}
         for node in nodes:
+            if node.is_bucket or SupernodeBucketer.is_bucket_node_id(node.id):
+                self._has_buckets = True
             by_domain.setdefault(node.domain, []).append(self._serialize_node(node))
         query = self.build_upsert_nodes_cypher()
         for domain, batch in by_domain.items():
@@ -326,6 +452,12 @@ class Neo4jGraphStore(GraphStore):
         edges_by_domain: dict[Domain, list[dict[str, Any]]] = {}
 
         for edge in edges:
+            if (
+                edge.edge_type == BUCKET_EDGE_TYPE
+                or SupernodeBucketer.is_bucket_node_id(edge.source_id)
+                or SupernodeBucketer.is_bucket_node_id(edge.target_id)
+            ):
+                self._has_buckets = True
             edges_by_domain.setdefault(edge.domain, []).append(
                 self._serialize_edge(edge)
             )
@@ -389,6 +521,7 @@ class Neo4jGraphStore(GraphStore):
         cypher = self.build_neighbors_cypher(direction=direction, limit=limit)
         params = {
             "node_id": node_id,
+            "node_ids": candidate_bucket_ids(node_id, self._num_buckets),
             "edge_types": list(edge_types) if edge_types else [],
             "edge_types_empty": not bool(edge_types),
             "domains": [d.value for d in domains] if domains else [],
@@ -403,17 +536,24 @@ class Neo4jGraphStore(GraphStore):
                 edge = self._deserialize_edge(row["r"])
                 if edge.edge_type == BUCKET_EDGE_TYPE:
                     continue
-                edge = edge.model_copy(
-                    update={
-                        "source_id": SupernodeBucketer.unwrap_bucket_id(edge.source_id),
-                        "target_id": SupernodeBucketer.unwrap_bucket_id(edge.target_id),
-                    }
+                edge = _unwrap_edge(edge)
+                neighbor_id = (
+                    edge.target_id if edge.source_id == node_id else edge.source_id
                 )
+                if neighbor_id == node_id:
+                    continue
                 node = self._deserialize_node(row["t"])
-                if node.is_proxy and node.target_domain is not None:
-                    resolved = await self.get_node(node.id)
+                if (
+                    node.is_bucket
+                    or SupernodeBucketer.is_bucket_node_id(node.id)
+                    or node.id != neighbor_id
+                    or (node.is_proxy and node.target_domain is not None)
+                ):
+                    resolved = await self.get_node(neighbor_id)
                     if resolved is not None:
                         node = resolved
+                    elif node.is_bucket or SupernodeBucketer.is_bucket_node_id(node.id):
+                        continue
                 if domains and node.domain not in domains:
                     continue
                 key = (edge.source_id, edge.target_id, edge.edge_type)
@@ -461,7 +601,7 @@ class Neo4jGraphStore(GraphStore):
                 update={"seed_ids": [seed_id], "max_depth": remaining_depth}
             )
             cypher, params = self.build_k_hop_cypher(
-                sub_req, max_depth_override=remaining_depth
+                sub_req, max_depth_override=remaining_depth, bucketed=True
             )
             rows = await self._run_cypher(cypher, params, domain=shard_domain)
 
@@ -470,10 +610,22 @@ class Neo4jGraphStore(GraphStore):
                 row_edges = [self._deserialize_edge(e) for e in row.get("edges", [])]
                 nodes_expanded += len(row_nodes)
 
+                raw_path = [str(v) for v in row.get("path", [n.id for n in row_nodes])]
+                local_lp, unwrapped_hops = SupernodeBucketer.unwrap_path(raw_path)
+                local_depth = max(0, len(local_lp) - 1)
+                if local_depth < 1 or local_depth > remaining_depth:
+                    continue
+                full_lp = [*prefix_path[:-1], *local_lp] if prefix_path else local_lp
+                full_depth = max(0, len(full_lp) - 1)
+                if full_depth < 1 or full_depth > effective_max_depth:
+                    continue
+
                 for node in row_nodes:
-                    if node.is_bucket:
+                    if node.is_bucket or SupernodeBucketer.is_bucket_node_id(node.id):
                         continue
                     if node.is_proxy and node.target_domain is not None:
+                        continue
+                    if request.domains and node.domain not in request.domains:
                         continue
                     collected_nodes.setdefault(node.id, node)
 
@@ -482,41 +634,38 @@ class Neo4jGraphStore(GraphStore):
                         continue
                     if edge.is_derived and not request.include_derived:
                         continue
-                    unwrapped = edge.model_copy(
-                        update={
-                            "source_id": SupernodeBucketer.unwrap_bucket_id(
-                                edge.source_id
-                            ),
-                            "target_id": SupernodeBucketer.unwrap_bucket_id(
-                                edge.target_id
-                            ),
-                        }
-                    )
+                    if request.edge_types and edge.edge_type not in request.edge_types:
+                        continue
+                    unwrapped = _unwrap_edge(edge)
                     collected_edges.setdefault(
                         (unwrapped.source_id, unwrapped.target_id, unwrapped.edge_type),
                         unwrapped,
                     )
 
-                raw_path = [str(v) for v in row.get("path", [n.id for n in row_nodes])]
-                local_lp, unwrapped_hops = SupernodeBucketer.unwrap_path(raw_path)
-                unwrapped_hops_total += unwrapped_hops
-                full_lp = [*prefix_path[:-1], *local_lp] if prefix_path else local_lp
                 if len(full_lp) > 1 and tuple(full_lp) not in seen_paths:
                     seen_paths.add(tuple(full_lp))
                     logical_paths.append(full_lp)
-                    depth_reached = max(depth_reached, len(full_lp) - 1)
+                    unwrapped_hops_total += unwrapped_hops
+                    depth_reached = max(depth_reached, full_depth)
 
                 # Schedule cross-shard continuation when a proxy node is encountered
-                local_depth = max(0, len(local_lp) - 1)
                 for node in row_nodes:
                     if node.is_proxy and node.target_domain is not None:
-                        resolved = await self.get_node(node.id)
-                        if resolved is not None:
+                        logical_proxy_id = SupernodeBucketer.unwrap_bucket_id(node.id)
+                        resolved = await self.get_node(logical_proxy_id)
+                        if resolved is not None and (
+                            not request.domains or resolved.domain in request.domains
+                        ):
                             collected_nodes.setdefault(resolved.id, resolved)
                         next_used = depth_used + local_depth
                         if next_used < effective_max_depth:
                             pending_shards.append(
-                                (node.id, node.target_domain, next_used, full_lp)
+                                (
+                                    logical_proxy_id,
+                                    node.target_domain,
+                                    next_used,
+                                    full_lp,
+                                )
                             )
 
                 violation = tracker.check_step(
@@ -651,4 +800,5 @@ class Neo4jGraphStore(GraphStore):
     async def clear(self) -> None:
         for domain in Domain:
             await self._run_cypher("MATCH (n:Entity) DETACH DELETE n", domain=domain)
+        self._has_buckets = False
         self._fault.configure(FaultMode.NONE)

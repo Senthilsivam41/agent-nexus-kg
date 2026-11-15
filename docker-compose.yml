@@ -1,0 +1,49 @@
+services:
+  neo4j:
+    build:
+      context: .
+      dockerfile: docker/neo4j/Dockerfile
+    image: scale-kg-neo4j:latest
+    container_name: scale-kg-neo4j
+    ports:
+      - "7474:7474"
+      - "7687:7474"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7474/health', timeout=1)"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+
+  hugegraph:
+    build:
+      context: .
+      dockerfile: docker/hugegraph/Dockerfile
+    image: scale-kg-hugegraph:latest
+    container_name: scale-kg-hugegraph
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/versions', timeout=1)"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+
+  puppygraph:
+    build:
+      context: .
+      dockerfile: docker/puppygraph/Dockerfile
+    image: scale-kg-puppygraph:latest
+    container_name: scale-kg-puppygraph
+    ports:
+      - "8081:8081"
+    environment:
+      PUPPYGRAPH_WAREHOUSE_DIR: /data/warehouse
+    volumes:
+      - ./.docker-data/warehouse:/data/warehouse
+      - /tmp:/tmp
+      - /private/var/folders:/private/var/folders
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/health', timeout=1)"]
+      interval: 5s
+      timeout: 2s
+      retries: 5

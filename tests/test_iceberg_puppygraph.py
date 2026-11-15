@@ -14,6 +14,7 @@ from scale_kg.adapters import IcebergPuppyGraphStore, InMemoryGraphStore
 from scale_kg.core import (
     Domain,
     EntityNode,
+    GuardrailViolationCode,
     RelationshipEdge,
     SupernodeBucketer,
     TraversalRequest,
@@ -228,3 +229,166 @@ class TestIcebergPuppyGraphStore:
         assert res.metrics.bucket_hops_unwrapped == 1
         assert res.paths == [["customer:org:0", "technology:lang:python"]]
         assert captured[0][0] == f"/{protocol}"
+
+    async def test_remote_puppygraph_bucketing_neighbors_pruning_and_guardrails(
+        self, tmp_path: Path
+    ) -> None:
+        captured_queries: list[dict[str, Any]] = []
+
+        class _BucketPuppyTransport(httpx.AsyncBaseTransport):
+            async def handle_async_request(
+                self, request: httpx.Request
+            ) -> httpx.Response:
+                payload = json.loads(request.content.decode("utf-8"))
+                captured_queries.append(payload)
+                query = payload.get("query", "")
+                if "WHERE s.id IN $ids" in query:
+                    return httpx.Response(
+                        200,
+                        json={
+                            "neighbors": [
+                                {
+                                    "edge": {
+                                        "source_id": "technology:lang:python::bucket::3",
+                                        "target_id": "product:sdk:kinetic",
+                                        "edge_type": "POWERS",
+                                        "domain": "technology",
+                                        "target_domain": "product",
+                                    },
+                                    "node": {
+                                        "id": "product:sdk:kinetic",
+                                        "domain": "product",
+                                        "entity_type": "Product",
+                                    },
+                                },
+                                {
+                                    "edge": {
+                                        "source_id": "technology:lang:python",
+                                        "target_id": "technology:lang:python::bucket::3",
+                                        "edge_type": "BUCKET_LINK",
+                                        "domain": "technology",
+                                        "target_domain": "technology",
+                                    },
+                                    "node": {
+                                        "id": "technology:lang:python::bucket::3",
+                                        "domain": "technology",
+                                        "entity_type": "LanguageBucket",
+                                        "is_bucket": True,
+                                    },
+                                },
+                            ]
+                        },
+                    )
+                return httpx.Response(
+                    200,
+                    json={
+                        "nodes": [
+                            {
+                                "id": "customer:org:0",
+                                "domain": "customer",
+                                "entity_type": "Organization",
+                            },
+                            {
+                                "id": "technology:lang:python::bucket::3",
+                                "domain": "technology",
+                                "entity_type": "LanguageBucket",
+                                "is_bucket": True,
+                            },
+                            {
+                                "id": "technology:lang:python",
+                                "domain": "technology",
+                                "entity_type": "Language",
+                            },
+                            {
+                                "id": "product:sdk:kinetic",
+                                "domain": "product",
+                                "entity_type": "Product",
+                            },
+                        ],
+                        "edges": [
+                            {
+                                "source_id": "customer:org:0",
+                                "target_id": "technology:lang:python::bucket::3",
+                                "edge_type": "USES",
+                                "domain": "customer",
+                                "target_domain": "technology",
+                            },
+                            {
+                                "source_id": "technology:lang:python::bucket::3",
+                                "target_id": "technology:lang:python",
+                                "edge_type": "BUCKET_LINK",
+                                "domain": "technology",
+                                "target_domain": "technology",
+                            },
+                            {
+                                "source_id": "technology:lang:python::bucket::7",
+                                "target_id": "product:sdk:kinetic",
+                                "edge_type": "POWERS",
+                                "domain": "technology",
+                                "target_domain": "product",
+                            },
+                        ],
+                        "paths": [
+                            [
+                                "customer:org:0",
+                                "technology:lang:python::bucket::3",
+                                "technology:lang:python",
+                            ],
+                            [
+                                "customer:org:0",
+                                "technology:lang:python::bucket::3",
+                                "technology:lang:python",
+                                "technology:lang:python::bucket::7",
+                                "product:sdk:kinetic",
+                            ],
+                        ],
+                    },
+                )
+
+        store = IcebergPuppyGraphStore(
+            tmp_path / "warehouse",
+            puppygraph_url="http://puppygraph.mock:8081",
+            query_protocol="cypher",
+            transport=_BucketPuppyTransport(),
+        )
+        neighbors = await store.get_neighbors("technology:lang:python", direction="out")
+        assert len(captured_queries[0]["parameters"]["ids"]) == 17
+        assert (
+            "technology:lang:python::bucket::15"
+            in (captured_queries[0]["parameters"]["ids"])
+        )
+        assert [
+            (e.source_id, e.target_id, e.edge_type, n.id) for e, n in neighbors
+        ] == [
+            (
+                "technology:lang:python",
+                "product:sdk:kinetic",
+                "POWERS",
+                "product:sdk:kinetic",
+            )
+        ]
+
+        # max_depth=1 sends *1..3 physical hops, unwraps ::bucket::k on edges, and prunes 2-logical-hop path
+        res = await store.traverse_k_hop(
+            TraversalRequest(
+                seed_ids=["customer:org:0"], max_depth=1, edge_types=["USES"]
+            )
+        )
+        assert "*1..3" in captured_queries[1]["query"]
+        assert "BUCKET_LINK" in captured_queries[1]["query"]
+        assert res.paths == [["customer:org:0", "technology:lang:python"]]
+        assert {n.id for n in res.nodes} == {"customer:org:0", "technology:lang:python"}
+        assert [(e.source_id, e.target_id, e.edge_type) for e in res.edges] == [
+            ("customer:org:0", "technology:lang:python", "USES")
+        ]
+
+        # RuntimeGuardrailTracker aborts remote PuppyGraph traversal when max_results is exceeded
+        aborted_res = await store.traverse_k_hop(
+            TraversalRequest(seed_ids=["customer:org:0"], max_depth=2, max_results=2)
+        )
+        assert aborted_res.metrics.aborted is True
+        assert aborted_res.metrics.violation is not None
+        assert (
+            aborted_res.metrics.violation.code
+            == GuardrailViolationCode.MAX_RESULTS_EXCEEDED
+        )
