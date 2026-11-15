@@ -20,3 +20,10 @@
 - [x] `[E3.2]` `SEN-74`: Federated `QueryCoordinator` across domain shards emitting `cross_domain_hops` & `single_domain_locality_ratio`, on-the-fly derived rules (`SIMILAR_TO`, `INDIRECTLY_USES`), and automatic `materialized_hot_path=True` promotion
 - [x] `[E3.3]` `SEN-75`: Parquet/Iceberg `LakehouseContentStore` (authoritative document payloads & historical graph slices) + 5-stage `HybridGraphRAGRouter` (Vector top-K seeds → guarded 1–3 hop expansion → RRF fusion → selective top-N hydration → grounded citations)
 - [x] Verify full suite, linter, typechecker, and build pass (`make check`)
+
+# Epic E4 (`SEN-64`): Scale Benchmark Harness, Golden Regression Suite & Gate 2 ADR
+
+- [x] `[E4.1]` `SEN-76`: `PowerLawGraphGenerator` (`micro`, `local`, `cluster` presets scaling toward 100M/1B/10B edges), deliberate supernodes (`technology:lang:python`, `customer:region:india`), tunable `cross_domain_edge_share` (`0.05`, `0.15`, `0.30`), and unmaterialized derived-edge rejection payloads
+- [x] `[E4.2]` `SEN-77`: Frozen `GoldenQuerySuite` (`FROZEN_GOLDEN_QUERIES`) asserting 100% deterministic parity, unwrapped paths, and guardrail compliance across `GraphStore` adapters
+- [x] `[E4.3]` `SEN-78`: 7-workload `BenchmarkSuite` (1/2/3-hop P50/P95/P99 latency, supernode traversal, concurrent ramp, bulk/streaming ingestion, cross-partition cost ratio, HA failure recovery, cost/1B extrapolation) & weighted Gate 2 `generate_gate2_adr` generator
+- [x] Verify full suite, linter, typechecker, and build pass (`ruff`, `mypy`, `pytest`: 95/95 passed)
