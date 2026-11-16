@@ -100,6 +100,7 @@ class IcebergPuppyGraphStore(GraphStore):
         num_buckets: int = 16,
         transport: httpx.AsyncBaseTransport | None = None,
         http_client: httpx.AsyncClient | None = None,
+        cache_partitions: bool = False,
     ) -> None:
         self.warehouse_path = Path(warehouse_path)
         self.nodes_dir = self.warehouse_path / "nodes"
@@ -115,6 +116,7 @@ class IcebergPuppyGraphStore(GraphStore):
         self._fault = FaultState()
         self._transport = transport
         self._external_client = http_client
+        self._cache_partitions = cache_partitions
 
         self._last_scan_stats = PartitionScanStats()
         self._cumulative_total_partitions = 0
@@ -433,58 +435,109 @@ class IcebergPuppyGraphStore(GraphStore):
         return len(edges)
 
     def _read_node_local(
-        self, node_id: str, scanned_tracker: set[Path] | None = None
+        self,
+        node_id: str,
+        scanned_tracker: set[Path] | None = None,
+        *,
+        all_files: list[Path] | None = None,
+        partition_cache: dict[Path, dict[str, EntityNode]] | None = None,
     ) -> EntityNode | None:
         bucket = compute_bucket_id(node_id, self._num_buckets)
-        all_files = self._list_partition_files(self.nodes_dir)
-        candidate_files = [
-            p for p in all_files if p.parent.name == f"bucket_16={bucket}"
-        ]
+        files = (
+            all_files
+            if all_files is not None
+            else self._list_partition_files(self.nodes_dir)
+        )
+        candidate_files = [p for p in files if p.parent.name == f"bucket_16={bucket}"]
         if scanned_tracker is not None:
             scanned_tracker.update(candidate_files)
         else:
-            self._record_scan(len(all_files), len(candidate_files))
+            self._record_scan(len(files), len(candidate_files))
 
         for part_file in candidate_files:
-            table = pq.read_table(part_file, filters=[("id", "=", node_id)])
-            if table.num_rows > 0:
-                return self._row_to_node(table.to_pylist()[0])
+            if partition_cache is not None:
+                if part_file not in partition_cache:
+                    rows = pq.read_table(part_file).to_pylist()
+                    partition_cache[part_file] = {
+                        r["id"]: self._row_to_node(r) for r in rows
+                    }
+                found = partition_cache[part_file].get(node_id)
+                if found is not None:
+                    return found
+            else:
+                table = pq.read_table(part_file, filters=[("id", "=", node_id)])
+                if table.num_rows > 0:
+                    return self._row_to_node(table.to_pylist()[0])
         return None
 
     def _read_out_edges_local(
-        self, node_id: str, scanned_tracker: set[Path] | None = None
+        self,
+        node_id: str,
+        scanned_tracker: set[Path] | None = None,
+        *,
+        all_files: list[Path] | None = None,
+        partition_cache: dict[Path, dict[str, list[RelationshipEdge]]] | None = None,
     ) -> list[RelationshipEdge]:
         bucket = compute_bucket_id(node_id, self._num_buckets)
-        all_files = self._list_partition_files(self.edges_dir)
-        candidate_files = [
-            p for p in all_files if p.parent.name == f"bucket_16={bucket}"
-        ]
+        files = (
+            all_files
+            if all_files is not None
+            else self._list_partition_files(self.edges_dir)
+        )
+        candidate_files = [p for p in files if p.parent.name == f"bucket_16={bucket}"]
         if scanned_tracker is not None:
             scanned_tracker.update(candidate_files)
         else:
-            self._record_scan(len(all_files), len(candidate_files))
+            self._record_scan(len(files), len(candidate_files))
 
         edges: list[RelationshipEdge] = []
         for part_file in candidate_files:
-            table = pq.read_table(part_file, filters=[("source_id", "=", node_id)])
-            for row in table.to_pylist():
-                edges.append(self._row_to_edge(row))
+            if partition_cache is not None:
+                if part_file not in partition_cache:
+                    by_src: dict[str, list[RelationshipEdge]] = {}
+                    for row in pq.read_table(part_file).to_pylist():
+                        edge = self._row_to_edge(row)
+                        by_src.setdefault(edge.source_id, []).append(edge)
+                    partition_cache[part_file] = by_src
+                edges.extend(partition_cache[part_file].get(node_id, ()))
+            else:
+                table = pq.read_table(part_file, filters=[("source_id", "=", node_id)])
+                for row in table.to_pylist():
+                    edges.append(self._row_to_edge(row))
         return edges
 
     def _read_in_edges_local(
-        self, node_id: str, scanned_tracker: set[Path] | None = None
+        self,
+        node_id: str,
+        scanned_tracker: set[Path] | None = None,
+        *,
+        all_files: list[Path] | None = None,
+        partition_cache: dict[Path, dict[str, list[RelationshipEdge]]] | None = None,
     ) -> list[RelationshipEdge]:
-        all_files = self._list_partition_files(self.edges_dir)
+        files = (
+            all_files
+            if all_files is not None
+            else self._list_partition_files(self.edges_dir)
+        )
         if scanned_tracker is not None:
-            scanned_tracker.update(all_files)
+            scanned_tracker.update(files)
         else:
-            self._record_scan(len(all_files), len(all_files))
+            self._record_scan(len(files), len(files))
 
         edges: list[RelationshipEdge] = []
-        for part_file in all_files:
-            table = pq.read_table(part_file, filters=[("target_id", "=", node_id)])
-            for row in table.to_pylist():
-                edges.append(self._row_to_edge(row))
+        for part_file in files:
+            if partition_cache is not None:
+                if part_file not in partition_cache:
+                    by_dst: dict[str, list[RelationshipEdge]] = {}
+                    for row in pq.read_table(part_file).to_pylist():
+                        edge = self._row_to_edge(row)
+                        by_dst.setdefault(edge.target_id, []).append(edge)
+                    partition_cache[part_file] = by_dst
+                edges.extend(partition_cache[part_file].get(node_id, ()))
+            else:
+                table = pq.read_table(part_file, filters=[("target_id", "=", node_id)])
+                for row in table.to_pylist():
+                    edges.append(self._row_to_edge(row))
         return edges
 
     def build_cypher_query(
@@ -648,16 +701,41 @@ class IcebergPuppyGraphStore(GraphStore):
             return pairs
 
         scanned_edge_files: set[Path] = set()
+        all_node_files = self._list_partition_files(self.nodes_dir)
         all_edge_files = self._list_partition_files(self.edges_dir)
+        node_cache: dict[Path, dict[str, EntityNode]] | None = (
+            {} if self._cache_partitions else None
+        )
+        out_cache: dict[Path, dict[str, list[RelationshipEdge]]] | None = (
+            {} if self._cache_partitions else None
+        )
+        in_cache: dict[Path, dict[str, list[RelationshipEdge]]] | None = (
+            {} if self._cache_partitions else None
+        )
 
         async def _fetch_node(nid: str) -> EntityNode | None:
-            return self._read_node_local(nid, scanned_tracker=set())
+            return self._read_node_local(
+                nid,
+                scanned_tracker=set(),
+                all_files=all_node_files,
+                partition_cache=node_cache,
+            )
 
         async def _fetch_out(nid: str) -> list[RelationshipEdge]:
-            return self._read_out_edges_local(nid, scanned_tracker=scanned_edge_files)
+            return self._read_out_edges_local(
+                nid,
+                scanned_tracker=scanned_edge_files,
+                all_files=all_edge_files,
+                partition_cache=out_cache,
+            )
 
         async def _fetch_in(nid: str) -> list[RelationshipEdge]:
-            return self._read_in_edges_local(nid, scanned_tracker=scanned_edge_files)
+            return self._read_in_edges_local(
+                nid,
+                scanned_tracker=scanned_edge_files,
+                all_files=all_edge_files,
+                partition_cache=in_cache,
+            )
 
         neighbors = await resolve_logical_neighbors(
             node_id,
@@ -686,12 +764,28 @@ class IcebergPuppyGraphStore(GraphStore):
         scanned_edge_files: set[Path] = set()
         all_node_files = self._list_partition_files(self.nodes_dir)
         all_edge_files = self._list_partition_files(self.edges_dir)
+        node_cache: dict[Path, dict[str, EntityNode]] | None = (
+            {} if self._cache_partitions else None
+        )
+        out_cache: dict[Path, dict[str, list[RelationshipEdge]]] | None = (
+            {} if self._cache_partitions else None
+        )
 
         async def _fetch_node(nid: str) -> EntityNode | None:
-            return self._read_node_local(nid, scanned_tracker=scanned_node_files)
+            return self._read_node_local(
+                nid,
+                scanned_tracker=scanned_node_files,
+                all_files=all_node_files,
+                partition_cache=node_cache,
+            )
 
         async def _fetch_out(nid: str) -> list[RelationshipEdge]:
-            return self._read_out_edges_local(nid, scanned_tracker=scanned_edge_files)
+            return self._read_out_edges_local(
+                nid,
+                scanned_tracker=scanned_edge_files,
+                all_files=all_edge_files,
+                partition_cache=out_cache,
+            )
 
         result = await run_guarded_bfs(
             request,

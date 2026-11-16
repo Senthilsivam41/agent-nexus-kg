@@ -300,7 +300,9 @@ class HugeGraphContainerApp:
                     if params.get("domains")
                     else None
                 )
-                edge_types = _extract_inline_edge_types(str(payload.get("gremlin", "")))
+                gremlin_q = str(payload.get("gremlin", ""))
+                edge_types = _extract_inline_edge_types(gremlin_q)
+                include_derived = ".has('is_derived', false)" not in gremlin_q
             elif path.endswith("/cypher"):
                 params = payload["parameters"]
                 seed_ids = params["seed_ids"]
@@ -311,7 +313,9 @@ class HugeGraphContainerApp:
                     if params.get("domains")
                     else None
                 )
-                edge_types = _extract_inline_edge_types(str(payload.get("query", "")))
+                cypher_q = str(payload.get("query", ""))
+                edge_types = _extract_inline_edge_types(cypher_q)
+                include_derived = "is_derived = false" not in cypher_q
             else:
                 seed_ids = payload["sources"]["ids"]
                 raw_depth = int(
@@ -330,6 +334,9 @@ class HugeGraphContainerApp:
                     if lbl != BUCKET_EDGE_TYPE
                 ]
                 edge_types = step_labels or None
+                include_derived = not bool(
+                    payload["steps"].get("exclude_derived", False)
+                )
 
             res = await self.backing.traverse_k_hop(
                 TraversalRequest(
@@ -338,6 +345,7 @@ class HugeGraphContainerApp:
                     edge_types=edge_types,
                     domains=domains,
                     max_results=limit,
+                    include_derived=include_derived,
                 )
             )
             return 200, {
@@ -345,6 +353,7 @@ class HugeGraphContainerApp:
                 "edges": [e.model_dump(mode="json") for e in res.edges],
                 "paths": res.paths,
                 "nodes_expanded": res.metrics.nodes_expanded,
+                "bucket_hops_unwrapped": res.metrics.bucket_hops_unwrapped,
             }
 
         if method == "GET" and path.endswith("/traversers/count"):
@@ -370,9 +379,15 @@ class PuppyGraphContainerApp:
 
     def _resolve_store(self, headers: dict[str, str]) -> IcebergPuppyGraphStore:
         header_wh = headers.get("x-puppygraph-warehouse")
-        if header_wh and Path(header_wh).exists():
-            return IcebergPuppyGraphStore(header_wh)
-        return IcebergPuppyGraphStore(self.default_warehouse)
+        if header_wh:
+            candidate = Path(header_wh)
+            if candidate.exists():
+                return IcebergPuppyGraphStore(candidate, cache_partitions=True)
+            if ".docker-data/warehouse" in header_wh:
+                rel = header_wh.split(".docker-data/warehouse", 1)[1].lstrip("/")
+                mapped = self.default_warehouse / rel if rel else self.default_warehouse
+                return IcebergPuppyGraphStore(mapped, cache_partitions=True)
+        return IcebergPuppyGraphStore(self.default_warehouse, cache_partitions=True)
 
     async def handle(
         self,
@@ -448,8 +463,9 @@ class PuppyGraphContainerApp:
                     else None
                 )
                 edge_types = _extract_inline_edge_types(query)
+                include_derived = "is_derived = false" not in query
             else:
-                query = str(payload.get("query", ""))
+                query = str(payload.get("gremlin") or payload.get("query", ""))
                 bindings: dict[str, Any] = payload.get("bindings") or {}
                 seed_ids = list(bindings.get("seed_ids", []))
                 raw_times = (
@@ -465,6 +481,7 @@ class PuppyGraphContainerApp:
                     else None
                 )
                 edge_types = _extract_inline_edge_types(query)
+                include_derived = ".has('is_derived', false)" not in query
 
             res = await store.traverse_k_hop(
                 TraversalRequest(
@@ -473,6 +490,7 @@ class PuppyGraphContainerApp:
                     edge_types=edge_types,
                     domains=domains,
                     max_results=limit,
+                    include_derived=include_derived,
                 )
             )
             return 200, {
@@ -517,42 +535,51 @@ async def _handle_client(
     writer: asyncio.StreamWriter,
 ) -> None:
     try:
-        request_line = await reader.readline()
-        if not request_line:
-            return
-        parts = request_line.decode("latin-1").strip().split(" ")
-        if len(parts) < 2:
-            return
-        method, raw_path = parts[0], parts[1]
-
-        headers: dict[str, str] = {}
         while True:
-            line = await reader.readline()
-            if not line or line in (b"\r\n", b"\n"):
-                break
-            decoded = line.decode("latin-1").strip()
-            if ":" in decoded:
-                k, v = decoded.split(":", 1)
-                headers[k.strip().lower()] = v.strip()
+            request_line = await reader.readline()
+            if not request_line:
+                return
+            parts = request_line.decode("latin-1").strip().split(" ")
+            if len(parts) < 2:
+                return
+            method, raw_path = parts[0], parts[1]
 
-        content_length = int(headers.get("content-length", "0"))
-        body = await reader.readexactly(content_length) if content_length > 0 else b""
+            headers: dict[str, str] = {}
+            while True:
+                line = await reader.readline()
+                if not line or line in (b"\r\n", b"\n"):
+                    break
+                decoded = line.decode("latin-1").strip()
+                if ":" in decoded:
+                    k, v = decoded.split(":", 1)
+                    headers[k.strip().lower()] = v.strip()
 
-        try:
-            status, payload = await app.handle(method, raw_path, headers, body)
-        except Exception as exc:  # noqa: BLE001
-            status, payload = 500, {"error": str(exc)}
+            content_length = int(headers.get("content-length", "0"))
+            body = (
+                await reader.readexactly(content_length) if content_length > 0 else b""
+            )
 
-        resp_bytes = json.dumps(payload).encode("utf-8")
-        reason = _REASON_PHRASES.get(status, "OK")
-        header_block = (
-            f"HTTP/1.1 {status} {reason}\r\n"
-            "Content-Type: application/json\r\n"
-            f"Content-Length: {len(resp_bytes)}\r\n"
-            "Connection: close\r\n\r\n"
-        ).encode("latin-1")
-        writer.write(header_block + resp_bytes)
-        await writer.drain()
+            try:
+                status, payload = await app.handle(method, raw_path, headers, body)
+            except Exception as exc:  # noqa: BLE001
+                status, payload = 500, {"error": str(exc)}
+
+            resp_bytes = json.dumps(payload).encode("utf-8")
+            reason = _REASON_PHRASES.get(status, "OK")
+            should_close = headers.get("connection", "").lower() == "close"
+            conn_hdr = "close" if should_close else "keep-alive"
+            header_block = (
+                f"HTTP/1.1 {status} {reason}\r\n"
+                "Content-Type: application/json\r\n"
+                f"Content-Length: {len(resp_bytes)}\r\n"
+                f"Connection: {conn_hdr}\r\n\r\n"
+            ).encode("latin-1")
+            writer.write(header_block + resp_bytes)
+            await writer.drain()
+            if should_close:
+                return
+    except (asyncio.IncompleteReadError, ConnectionError):
+        return
     finally:
         writer.close()
         await writer.wait_closed()

@@ -514,6 +514,11 @@ class HugeGraphStore(GraphStore):
             nodes_expanded_override=(
                 int(data["nodes_expanded"]) if "nodes_expanded" in data else None
             ),
+            bucket_hops_override=(
+                int(data["bucket_hops_unwrapped"])
+                if "bucket_hops_unwrapped" in data
+                else None
+            ),
             execution_time_ms=elapsed_ms,
         )
 

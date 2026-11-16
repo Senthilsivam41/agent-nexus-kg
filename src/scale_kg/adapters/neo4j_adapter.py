@@ -78,15 +78,11 @@ class _HttpCypherResult:
 class _HttpCypherSession:
     def __init__(
         self,
-        base_url: str,
+        client: httpx.AsyncClient,
         database: str,
-        auth: tuple[str, str],
-        transport: httpx.AsyncBaseTransport | None,
     ) -> None:
-        self._base_url = base_url.rstrip("/")
+        self._client = client
         self._database = database
-        self._auth = auth
-        self._transport = transport
 
     async def __aenter__(self) -> Self:
         return self
@@ -102,26 +98,20 @@ class _HttpCypherSession:
     async def run(
         self, query: str, parameters: dict[str, Any] | None = None
     ) -> _HttpCypherResult:
-        async with httpx.AsyncClient(
-            base_url=self._base_url,
-            auth=self._auth,
-            timeout=2.0,
-            transport=self._transport,
-        ) as client:
-            resp = await client.post(
-                f"/db/{self._database}/tx/commit",
-                json={"query": query, "parameters": parameters or {}},
+        resp = await self._client.post(
+            f"/db/{self._database}/tx/commit",
+            json={"query": query, "parameters": parameters or {}},
+        )
+        if resp.status_code >= 500:
+            raise GraphStoreUnavailableError(
+                f"Neo4j HTTP Cypher returned {resp.status_code}: {resp.text}"
             )
-            if resp.status_code >= 500:
-                raise GraphStoreUnavailableError(
-                    f"Neo4j HTTP Cypher returned {resp.status_code}: {resp.text}"
-                )
-            if resp.status_code >= 400:
-                raise GraphStoreError(
-                    f"Neo4j HTTP Cypher error ({resp.status_code}): {resp.text}"
-                )
-            body = resp.json()
-            return _HttpCypherResult(body.get("rows", body.get("data", [])))
+        if resp.status_code >= 400:
+            raise GraphStoreError(
+                f"Neo4j HTTP Cypher error ({resp.status_code}): {resp.text}"
+            )
+        body = resp.json()
+        return _HttpCypherResult(body.get("rows", body.get("data", [])))
 
 
 class HttpCypherDriver:
@@ -137,30 +127,35 @@ class HttpCypherDriver:
         self.base_url = base_url.rstrip("/")
         self.auth = auth
         self.transport = transport
+        self._client: httpx.AsyncClient | None = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None:
+            self._client = httpx.AsyncClient(
+                base_url=self.base_url,
+                auth=self.auth,
+                timeout=5.0,
+                transport=self.transport,
+            )
+        return self._client
 
     def session(self, *, database: str | None = None) -> _HttpCypherSession:
         return _HttpCypherSession(
-            self.base_url,
+            self._get_client(),
             database or "composite",
-            self.auth,
-            self.transport,
         )
 
     async def verify_connectivity(self) -> None:
-        async with httpx.AsyncClient(
-            base_url=self.base_url,
-            auth=self.auth,
-            timeout=2.0,
-            transport=self.transport,
-        ) as client:
-            resp = await client.get("/health")
-            if resp.status_code >= 400:
-                raise GraphStoreUnavailableError(
-                    f"Neo4j health endpoint returned {resp.status_code}"
-                )
+        resp = await self._get_client().get("/health")
+        if resp.status_code >= 400:
+            raise GraphStoreUnavailableError(
+                f"Neo4j health endpoint returned {resp.status_code}"
+            )
 
     async def close(self) -> None:
-        return None
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
 
 
 class Neo4jGraphStore(GraphStore):
@@ -530,6 +525,7 @@ class Neo4jGraphStore(GraphStore):
 
         results: list[tuple[RelationshipEdge, EntityNode]] = []
         seen_keys: set[tuple[str, str, str]] = set()
+        resolved_cache: dict[str, EntityNode | None] = {}
         for dom in target_domains:
             rows = await self._run_cypher(cypher, params, domain=dom)
             for row in rows:
@@ -549,7 +545,9 @@ class Neo4jGraphStore(GraphStore):
                     or node.id != neighbor_id
                     or (node.is_proxy and node.target_domain is not None)
                 ):
-                    resolved = await self.get_node(neighbor_id)
+                    if neighbor_id not in resolved_cache:
+                        resolved_cache[neighbor_id] = await self.get_node(neighbor_id)
+                    resolved = resolved_cache[neighbor_id]
                     if resolved is not None:
                         node = resolved
                     elif node.is_bucket or SupernodeBucketer.is_bucket_node_id(node.id):
@@ -587,18 +585,32 @@ class Neo4jGraphStore(GraphStore):
             pending_shards.append((seed_id, dom, 0, []))
 
         visited_shard_seeds: set[tuple[str, Domain]] = set()
+        resolved_proxies: dict[str, EntityNode | None] = {}
         while pending_shards:
             seed_id, shard_domain, depth_used, prefix_path = pending_shards.pop(0)
             if (seed_id, shard_domain) in visited_shard_seeds:
                 continue
             visited_shard_seeds.add((seed_id, shard_domain))
 
+            batch_seeds = [seed_id]
+            prefixes_by_seed: dict[str, list[str]] = {seed_id: prefix_path}
+            remaining_pending: list[tuple[str, Domain, int, list[str]]] = []
+            for s_id, s_dom, d_used, p_path in pending_shards:
+                if s_dom == shard_domain and d_used == depth_used:
+                    if (s_id, shard_domain) not in visited_shard_seeds:
+                        visited_shard_seeds.add((s_id, shard_domain))
+                        batch_seeds.append(s_id)
+                        prefixes_by_seed[s_id] = p_path
+                else:
+                    remaining_pending.append((s_id, s_dom, d_used, p_path))
+            pending_shards = remaining_pending
+
             remaining_depth = effective_max_depth - depth_used
             if remaining_depth < 1:
                 continue
 
             sub_req = request.model_copy(
-                update={"seed_ids": [seed_id], "max_depth": remaining_depth}
+                update={"seed_ids": batch_seeds, "max_depth": remaining_depth}
             )
             cypher, params = self.build_k_hop_cypher(
                 sub_req, max_depth_override=remaining_depth, bucketed=True
@@ -615,7 +627,8 @@ class Neo4jGraphStore(GraphStore):
                 local_depth = max(0, len(local_lp) - 1)
                 if local_depth < 1 or local_depth > remaining_depth:
                     continue
-                full_lp = [*prefix_path[:-1], *local_lp] if prefix_path else local_lp
+                row_prefix = prefixes_by_seed.get(local_lp[0], prefix_path)
+                full_lp = [*row_prefix[:-1], *local_lp] if row_prefix else local_lp
                 full_depth = max(0, len(full_lp) - 1)
                 if full_depth < 1 or full_depth > effective_max_depth:
                     continue
@@ -652,13 +665,25 @@ class Neo4jGraphStore(GraphStore):
                 for node in row_nodes:
                     if node.is_proxy and node.target_domain is not None:
                         logical_proxy_id = SupernodeBucketer.unwrap_bucket_id(node.id)
-                        resolved = await self.get_node(logical_proxy_id)
+                        resolved: EntityNode | None = collected_nodes.get(
+                            logical_proxy_id
+                        )
+                        if resolved is None:
+                            if logical_proxy_id not in resolved_proxies:
+                                resolved_proxies[
+                                    logical_proxy_id
+                                ] = await self.get_node(logical_proxy_id)
+                            resolved = resolved_proxies[logical_proxy_id]
                         if resolved is not None and (
                             not request.domains or resolved.domain in request.domains
                         ):
                             collected_nodes.setdefault(resolved.id, resolved)
                         next_used = depth_used + local_depth
-                        if next_used < effective_max_depth:
+                        if (
+                            next_used < effective_max_depth
+                            and (logical_proxy_id, node.target_domain)
+                            not in visited_shard_seeds
+                        ):
                             pending_shards.append(
                                 (
                                     logical_proxy_id,

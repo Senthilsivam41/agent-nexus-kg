@@ -138,9 +138,9 @@ def finalize_remote_traversal(
         else len(raw_nodes)
     )
     bucket_hops = (
-        bucket_hops_override
-        if bucket_hops_override is not None
-        else unwrapped_hops_total
+        unwrapped_hops_total
+        if unwrapped_hops_total > 0 or bucket_hops_override is None
+        else bucket_hops_override
     )
     cross_domain = sum(
         1 for e in edges if e.target_domain is not None and e.target_domain != e.domain
