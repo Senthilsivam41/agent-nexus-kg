@@ -40,7 +40,7 @@ For module-level class contracts, sequence flows, Parquet schemas, and algorithm
 
 | Layer | Implemented Modules | Core Responsibilities |
 | :--- | :--- | :--- |
-| **Layer 1: Hybrid Retrieval** | `scale_kg.routing.hybrid_rag` | Vector top-$K$ seed discovery, bounded KG expansion, Reciprocal Rank Fusion (`rrf_k=60`), selective top-$N$ payload hydration, grounded `SourceCitation` assembly. |
+| **Layer 1: Hybrid Retrieval & API** | `scale_kg.api`, `scale_kg.routing.hybrid_rag` | FastAPI `/v1/*` REST API & `ScaleKGGrpcServicer` (`scale_kg.v1.ScaleKGService`), vector top-$K$ seed discovery, bounded KG expansion, Reciprocal Rank Fusion (`rrf_k=60`), selective top-$N$ payload hydration, grounded `SourceCitation` assembly. |
 | **Layer 2: Routing & Guardrails** | `scale_kg.core`, `scale_kg.routing.directory`, `scale_kg.routing.coordinator` | Lean-graph write validation, pre-flight/runtime traversal budgets, O(1) Hop-0 `<domain>:<entity_type>:<slug>` routing, ghost/proxy federation, 16-way supernode bucketing, hot-path promotion. |
 | **Layer 3: Storage Adapters** | `scale_kg.adapters.*` | Engine-neutral async `GraphStore` ABC, shared 0-1 BFS & bucket unwrapping (`_traversal.py`), fault injection (`FaultState`), and 6 engine adapters across reference, Tier-1, and Tier-2 stub tiers. |
 | **Layer 4: Lakehouse Store** | `scale_kg.lakehouse.store` | PyArrow/Parquet authoritative storage for full document payloads (`documents/domain=<d>/documents.parquet`) and point-in-time `HistoricalGraphSlice` snapshots. |
@@ -119,4 +119,5 @@ All adapters implement `scale_kg.adapters.base.GraphStore` and expose an `Adapte
 | `JanusGraphStore`, `NebulaGraphStore` | **Contract Stubs** | Subclass `_ContractStubBase(InMemoryGraphStore)` with Gremlin / nGQL query builders and Gate 2 cost profiles. |
 | `EntityDirectory`, `QueryCoordinator`, `HybridGraphRAGRouter`, `LakehouseContentStore` | **Implemented & Verified** | Split-shard proxy federation, derived edge hot-path promotion, 5-stage RRF + Parquet hydration. |
 | `PowerLawGraphGenerator`, `GoldenQuerySuite`, `BenchmarkSuite`, `generate_gate2_adr` | **Implemented & Verified** | All 7 workloads and ADR generation verified at `micro` preset scale. |
-| FastAPI REST/gRPC API, Kafka consumers, K8s Helm/StatefulSets, OTel/Langfuse/OIDC | **Planned** | Specified in [DESIGN.md](DESIGN.md); not yet implemented in `src/scale_kg/`. |
+| FastAPI REST API (`scale_kg.api.app`) & typed gRPC (`ScaleKGGrpcServicer`) | **Implemented & Verified** | `/v1/*` REST endpoints, `scale_kg.proto`, HTTP JSON-gRPC bridge, `422` guardrail errors, optional API-key auth; native `grpcio` HTTP/2 optional via `scale-kg[grpc]`. |
+| Kafka consumers, K8s Helm/StatefulSets, OTel/Langfuse/OIDC | **Planned** | Specified in [DESIGN.md](DESIGN.md); not yet implemented in `src/scale_kg/`. |

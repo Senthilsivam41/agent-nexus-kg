@@ -1,5 +1,29 @@
 services:
+  api:
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+    image: scale-kg-api:latest
+    container_name: scale-kg-api
+    ports:
+      - "8000:8000"
+      - "50051:50051"
+    environment:
+      SCALE_KG_BACKEND: ${SCALE_KG_BACKEND:-in_memory}
+      SCALE_KG_WAREHOUSE_DIR: /data/warehouse
+      SCALE_KG_NEO4J_URI: http://neo4j:7474
+      SCALE_KG_HUGEGRAPH_URL: http://hugegraph:8080
+      SCALE_KG_PUPPYGRAPH_URL: http://puppygraph:8081
+    volumes:
+      - ./.docker-data/warehouse:/data/warehouse
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v1/health', timeout=1)"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+
   neo4j:
+    profiles: ["neo4j"]
     build:
       context: .
       dockerfile: docker/neo4j/Dockerfile
@@ -15,6 +39,7 @@ services:
       retries: 5
 
   hugegraph:
+    profiles: ["hugegraph"]
     build:
       context: .
       dockerfile: docker/hugegraph/Dockerfile
@@ -29,6 +54,7 @@ services:
       retries: 5
 
   puppygraph:
+    profiles: ["puppygraph"]
     build:
       context: .
       dockerfile: docker/puppygraph/Dockerfile

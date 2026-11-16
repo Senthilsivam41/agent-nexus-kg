@@ -27,3 +27,8 @@
 - [x] `[E4.2]` `SEN-77`: Frozen `GoldenQuerySuite` (`FROZEN_GOLDEN_QUERIES`) asserting 100% deterministic parity, unwrapped paths, and guardrail compliance across `GraphStore` adapters
 - [x] `[E4.3]` `SEN-78`: 7-workload `BenchmarkSuite` (1/2/3-hop P50/P95/P99 latency, supernode traversal, concurrent ramp, bulk/streaming ingestion, cross-partition cost ratio, HA failure recovery, cost/1B extrapolation) & weighted Gate 2 `generate_gate2_adr` generator
 - [x] Verify full suite, linter, typechecker, and build pass (`ruff`, `mypy`, `pytest`: 95/95 passed)
+
+# Layer 1 API: FastAPI REST & gRPC Service (`scale_kg.api`)
+
+- [x] `src/scale_kg/api/scale_kg.proto`, `models.py`, `state.py`, `grpc_service.py`, `app.py` (REST `/v1/*`, JSON-gRPC bridge, optional `grpcio` HTTP/2 server, structured `GuardrailViolation` `422` errors, optional API-key auth, CLI)
+- [x] `docker/api/Dockerfile`, `docker-compose.yml` service & profiles, `Makefile` `dev` target, `.env.example`, `portfolio.yaml`

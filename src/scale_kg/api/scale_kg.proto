@@ -1,0 +1,300 @@
+syntax = "proto3";
+
+package scale_kg.v1;
+
+service ScaleKGService {
+  rpc CheckHealth(HealthCheckRequest) returns (HealthCheckResponse);
+  rpc Ingest(IngestRequest) returns (IngestResponse);
+  rpc Traverse(TraversalRequest) returns (TraversalResult);
+  rpc HybridRetrieve(HybridRAGRequest) returns (HybridRAGResult);
+  rpc RunBenchmark(BenchmarkRunRequest) returns (BenchmarkRunResponse);
+  rpc PutDocuments(PutDocumentsRequest) returns (PutDocumentsResponse);
+  rpc GetDocument(GetDocumentRequest) returns (LakehouseDocument);
+  rpc WriteHistoricalSlice(HistoricalGraphSlice) returns (WriteHistoricalSliceResponse);
+  rpc GetHistoricalSlice(GetHistoricalSliceRequest) returns (HistoricalGraphSlice);
+  rpc RegisterAliases(RegisterAliasesRequest) returns (RegisterAliasesResponse);
+  rpc ResolveEntity(ResolveEntityRequest) returns (ResolveEntityResponse);
+}
+
+message HealthCheckRequest {}
+
+message HealthStatus {
+  string adapter_name = 1;
+  bool healthy = 2;
+  string status = 3;
+  string fault_mode = 4;
+  map<string, string> details = 5;
+}
+
+message CoordinatorStats {
+  int32 queries_executed = 1;
+  int32 derived_edges_computed = 2;
+  int32 hot_paths_promoted = 3;
+}
+
+message DirectoryStats {
+  int32 registered_entities = 1;
+  int32 registered_aliases = 2;
+  int32 registered_proxies = 3;
+  int32 canonical_hits = 4;
+  int32 directory_hits = 5;
+  int32 proxy_hints_used = 6;
+}
+
+message LakehouseStats {
+  int32 document_count = 1;
+  int32 slice_count = 2;
+  int32 hydration_calls = 3;
+  int32 hydrated_doc_count = 4;
+}
+
+message HealthCheckResponse {
+  string status = 1;
+  bool healthy = 2;
+  string backend = 3;
+  map<string, HealthStatus> shards = 4;
+  CoordinatorStats coordinator_stats = 5;
+  DirectoryStats directory_stats = 6;
+  LakehouseStats lakehouse_stats = 7;
+}
+
+message EntityNode {
+  string id = 1;
+  string domain = 2;
+  string entity_type = 3;
+  map<string, string> routing_props = 4;
+  string lakehouse_ref = 5;
+  bool is_proxy = 6;
+  string target_domain = 7;
+  bool is_bucket = 8;
+}
+
+message RelationshipEdge {
+  string source_id = 1;
+  string target_id = 2;
+  string edge_type = 3;
+  string domain = 4;
+  string target_domain = 5;
+  bool is_derived = 6;
+  bool materialized_hot_path = 7;
+  map<string, string> routing_props = 8;
+}
+
+message LakehouseDocument {
+  string lakehouse_ref = 1;
+  string entity_id = 2;
+  string domain = 3;
+  string title = 4;
+  string content = 5;
+  string source_uri = 6;
+  map<string, string> metadata = 7;
+  string updated_at = 8;
+}
+
+message AliasList {
+  repeated string aliases = 1;
+}
+
+message EmbeddingVector {
+  repeated double values = 1;
+}
+
+message IngestRequest {
+  repeated EntityNode nodes = 1;
+  repeated RelationshipEdge edges = 2;
+  map<string, AliasList> aliases = 3;
+  repeated LakehouseDocument documents = 4;
+  map<string, EmbeddingVector> embeddings = 5;
+}
+
+message IngestResponse {
+  int32 nodes_upserted = 1;
+  int32 edges_upserted = 2;
+  int32 documents_stored = 3;
+  int32 embeddings_indexed = 4;
+}
+
+message GuardrailViolation {
+  string code = 1;
+  string message = 2;
+  string limit = 3;
+  string observed = 4;
+  string phase = 5;
+  string entity_id = 6;
+}
+
+message TraversalRequest {
+  repeated string seed_ids = 1;
+  int32 max_depth = 2;
+  repeated string edge_types = 3;
+  repeated string domains = 4;
+  int32 max_results = 5;
+  double max_execution_seconds = 6;
+  int32 max_expanded_nodes = 7;
+  bool include_derived = 8;
+}
+
+message TraversalPath {
+  repeated string node_ids = 1;
+}
+
+message TraversalMetrics {
+  int32 depth_reached = 1;
+  int32 nodes_expanded = 2;
+  int32 results_returned = 3;
+  double execution_time_ms = 4;
+  int32 cross_domain_hops = 5;
+  double single_domain_locality_ratio = 6;
+  int32 bucket_hops_unwrapped = 7;
+  bool aborted = 8;
+  GuardrailViolation violation = 9;
+}
+
+message TraversalResult {
+  repeated string seed_ids = 1;
+  repeated EntityNode nodes = 2;
+  repeated RelationshipEdge edges = 3;
+  repeated TraversalPath paths = 4;
+  TraversalMetrics metrics = 5;
+}
+
+message HybridRAGRequest {
+  string query_text = 1;
+  repeated double query_embedding = 2;
+  repeated string seed_ids = 3;
+  int32 seed_k = 4;
+  int32 top_n = 5;
+  int32 max_depth = 6;
+  repeated string edge_types = 7;
+  repeated string domains = 8;
+  bool include_derived = 9;
+  int32 max_results = 10;
+  double max_execution_seconds = 11;
+  int32 max_expanded_nodes = 12;
+  bool require_lakehouse_ref = 13;
+}
+
+message SourceCitation {
+  string entity_id = 1;
+  string domain = 2;
+  string lakehouse_ref = 3;
+  string source_uri = 4;
+  string title = 5;
+  repeated TraversalPath supporting_paths = 6;
+}
+
+message HybridRAGHit {
+  EntityNode node = 1;
+  int32 rank = 2;
+  double rrf_score = 3;
+  double vector_score = 4;
+  int32 vector_rank = 5;
+  int32 graph_hop_distance = 6;
+  int32 graph_rank = 7;
+  LakehouseDocument document = 8;
+  SourceCitation citation = 9;
+  repeated TraversalPath supporting_paths = 10;
+}
+
+message HybridRAGResult {
+  string query_text = 1;
+  repeated string seed_ids = 2;
+  repeated HybridRAGHit hits = 3;
+  repeated SourceCitation citations = 4;
+  TraversalResult traversal = 5;
+  int32 candidates_considered = 6;
+  int32 hydrated_count = 7;
+  map<string, double> stage_timings_ms = 8;
+}
+
+message BenchmarkRunRequest {
+  string preset = 1;
+  repeated string adapters = 2;
+  double cross_domain_edge_share = 3;
+  int32 seed = 4;
+  bool run_golden_parity = 5;
+  bool generate_adr = 6;
+}
+
+message EngineScorecard {
+  string engine = 1;
+  string adapter_name = 2;
+  string tier = 3;
+  bool is_stub = 4;
+  double performance_score = 5;
+  double scalability_resilience_score = 6;
+  double cost_score = 7;
+  double operability_score = 8;
+  double graphrag_fit_score = 9;
+  double weighted_total = 10;
+  bool meets_latency_gate = 11;
+  bool eligible_for_production = 12;
+  repeated string disqualified_reasons = 13;
+}
+
+message BenchmarkRunResponse {
+  string suite_result_json = 1;
+  repeated EngineScorecard scorecards = 2;
+  string adr_markdown = 3;
+}
+
+message PutDocumentsRequest {
+  repeated LakehouseDocument documents = 1;
+}
+
+message PutDocumentsResponse {
+  int32 documents_stored = 1;
+}
+
+message GetDocumentRequest {
+  string lakehouse_ref = 1;
+}
+
+message HistoricalGraphSlice {
+  string slice_id = 1;
+  string as_of = 2;
+  string domain = 3;
+  repeated EntityNode nodes = 4;
+  repeated RelationshipEdge edges = 5;
+  map<string, string> metadata = 6;
+}
+
+message WriteHistoricalSliceResponse {
+  string slice_id = 1;
+  string domain = 2;
+  string path = 3;
+}
+
+message GetHistoricalSliceRequest {
+  string slice_id = 1;
+}
+
+message RegisterAliasesRequest {
+  map<string, string> aliases = 1;
+  map<string, string> entities = 2;
+}
+
+message RegisterAliasesResponse {
+  int32 aliases_registered = 1;
+  int32 entities_registered = 2;
+  DirectoryStats stats = 3;
+}
+
+message ResolveEntityRequest {
+  string entity_id = 1;
+}
+
+message CanonicalEntityId {
+  string domain = 1;
+  string entity_type = 2;
+  string slug = 3;
+  string raw_id = 4;
+}
+
+message ResolveEntityResponse {
+  string raw_id = 1;
+  string canonical_id = 2;
+  string domain = 3;
+  CanonicalEntityId parsed = 4;
+  DirectoryStats stats = 5;
+}

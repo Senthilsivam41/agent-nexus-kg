@@ -17,7 +17,28 @@ spec:
     dev: make dev
     check: make check
   services: []
-  interfaces: {}
+  interfaces:
+    rest:
+      protocol: http
+      entrypoint: scale_kg.api.app:create_app
+      health: /v1/health
+      endpoints:
+        - /v1/ingest
+        - /v1/traverse
+        - /v1/hybrid-retrieve
+        - /v1/benchmark/run
+        - /v1/nodes/{node_id}
+        - /v1/nodes/{node_id}/neighbors
+        - /v1/stats
+        - /v1/lakehouse/documents
+        - /v1/lakehouse/slices
+        - /v1/directory/aliases
+        - /v1/directory/resolve/{entity_id}
+    grpc:
+      protocol: grpc
+      proto: src/scale_kg/api/scale_kg.proto
+      service: scale_kg.v1.ScaleKGService
+      bridge: /scale_kg.v1.ScaleKGService/{rpc_method}
   integrations:
     consumes: []
     produces: []

@@ -21,6 +21,7 @@ Following repository guidelines, capabilities are separated by verified implemen
 * **Hybrid Vector + KG + Lakehouse Retrieval (`HybridGraphRAGRouter` & `LakehouseContentStore`):** 5-stage Seed-Then-Expand pipeline combining `InMemoryVectorIndex` cosine search, guarded KG expansion, Reciprocal Rank Fusion (`rrf_k=60`), selective top-$N$ PyArrow/Parquet hydration, and grounded `SourceCitation` assembly.
 * **Reference & Zero-ETL Parquet Adapters:** `InMemoryGraphStore` (partitioned reference baseline with `FaultState` injection) and `IcebergPuppyGraphStore` local PyArrow mode (`domain=<d>/bucket_16=<b>` Parquet partitions, Iceberg v2 metadata, `puppygraph_schema.json`, partition-pruned scans).
 * **Gate 2 Benchmark Harness (`scale_kg.benchmark`):** `PowerLawGraphGenerator` (`micro`, `local`, `cluster` presets), frozen `GoldenQuerySuite` (`GQ-01`..`GQ-07` cross-adapter parity), 7 PoC workloads (`BenchmarkSuite`), and automated weighted ADR generation (`generate_gate2_adr`).
+* **FastAPI REST & gRPC Service (`scale_kg.api`):** FastAPI `/v1/*` REST API (`create_app()`), typed `ScaleKGGrpcServicer` & `scale_kg.proto` contract (`scale_kg.v1.ScaleKGService`), HTTP JSON-gRPC bridge, structured `GuardrailViolation` `422` errors, optional API-key auth, and `python -m scale_kg.api.app` CLI.
 
 ### Implemented & Verified Against Mock Transports / Drivers (Live Cluster Integration Pending)
 * **`HugeGraphStore`:** Async `httpx` REST/Gremlin/OpenCypher client with PD partition headers and deterministic placement hints.
@@ -29,7 +30,7 @@ Following repository guidelines, capabilities are separated by verified implemen
 
 ### Contract Stubs & Planned Infrastructure
 * **Tier-2 Contract Stubs (`scale_kg.adapters.stubs`):** `JanusGraphStore` (ScyllaDB + OpenSearch Gremlin builder) and `NebulaGraphStore` (nGQL builder) extend `_ContractStubBase(InMemoryGraphStore)` for contract parity and Gate 2 modeling.
-* **Planned (Not Yet Implemented in `src/scale_kg/`):** FastAPI REST/gRPC server, Kafka streaming ingestion pipelines, Kubernetes multi-AZ StatefulSets/Helm charts, OpenTelemetry/Prometheus/Langfuse exporters, OIDC/Entra ID auth, and live 100M–10B cluster benchmarks (see [System Design Specification](docs/DESIGN.md)).
+* **Planned (Not Yet Implemented in `src/scale_kg/`):** Kafka streaming ingestion pipelines, Kubernetes multi-AZ StatefulSets/Helm charts, OpenTelemetry/Prometheus/Langfuse exporters, OIDC/Entra ID auth, and live 100M–10B cluster benchmarks (see [System Design Specification](docs/DESIGN.md)).
 
 ---
 
@@ -70,6 +71,7 @@ scale-kg/
 ├── src/scale_kg/
 │   ├── config.py               # GuardrailConfig, LatencyBudgetConfig, ScaleKGConfig
 │   ├── demo.py                 # Deterministic offline in-memory traversal demo
+│   ├── api/                    # FastAPI REST endpoints, gRPC servicer, proto contract
 │   ├── core/                   # Domain models, GuardrailEnforcer, SupernodeBucketer
 │   ├── routing/                # EntityDirectory, QueryCoordinator, HybridGraphRAGRouter
 │   ├── adapters/               # GraphStore ABC, 0-1 BFS, InMemory, Iceberg, HugeGraph, Neo4j, stubs
