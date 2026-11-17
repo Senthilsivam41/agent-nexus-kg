@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,7 @@ import httpx
 import pyarrow.parquet as pq
 import pytest
 
+import scale_kg.adapters.iceberg_puppygraph as iceberg_module
 from scale_kg.adapters import IcebergPuppyGraphStore, InMemoryGraphStore
 from scale_kg.core import (
     Domain,
@@ -392,3 +394,66 @@ class TestIcebergPuppyGraphStore:
             aborted_res.metrics.violation.code
             == GuardrailViolationCode.MAX_RESULTS_EXCEEDED
         )
+
+    async def test_local_in_neighbors_scans_each_edge_parquet_file_once_for_all_buckets(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        nodes, edges = _build_multi_bucket_dataset()
+        bucketer = SupernodeBucketer(degree_threshold=20, num_buckets=16)
+        b_nodes, b_edges, supernodes = bucketer.transform_dataset(nodes, edges)
+        assert "technology:lang:python" in supernodes
+
+        store = IcebergPuppyGraphStore(tmp_path / "warehouse")
+        await store.upsert_nodes(b_nodes)
+        await store.upsert_edges(b_edges)
+
+        read_in_calls: list[str | Sequence[str]] = []
+        orig_read_in = store._read_in_edges_local
+
+        def _spy_read_in(
+            candidate_ids: str | Sequence[str],
+            scanned_tracker: set[Path] | None = None,
+            *,
+            all_files: list[Path] | None = None,
+            partition_cache: dict[Path, Any] | None = None,
+        ) -> list[RelationshipEdge]:
+            read_in_calls.append(candidate_ids)
+            return orig_read_in(
+                candidate_ids,
+                scanned_tracker,
+                all_files=all_files,
+                partition_cache=partition_cache,
+            )
+
+        edge_files_read: list[Path] = []
+        orig_read_table = pq.read_table
+
+        def _spy_read_table(source: Any, *args: Any, **kwargs: Any) -> Any:
+            path = Path(source)
+            if store.edges_dir in path.parents:
+                edge_files_read.append(path)
+            return orig_read_table(source, *args, **kwargs)
+
+        monkeypatch.setattr(store, "_read_in_edges_local", _spy_read_in)
+        monkeypatch.setattr(iceberg_module.pq, "read_table", _spy_read_table)
+
+        neighbors = await store.get_neighbors("technology:lang:python", direction="in")
+        assert {n.id for _, n in neighbors} == {f"customer:org:{i}" for i in range(40)}
+        assert all(
+            e.target_id == "technology:lang:python" and e.edge_type == "USES"
+            for e, _ in neighbors
+        )
+
+        # Single batch call with all 17 candidate IDs (logical hub + 16 buckets)
+        assert len(read_in_calls) == 1
+        assert not isinstance(read_in_calls[0], str)
+        assert len(read_in_calls[0]) == 17
+        assert "technology:lang:python" in read_in_calls[0]
+        assert "technology:lang:python::bucket::15" in read_in_calls[0]
+
+        # Each edge Parquet partition on disk is scanned once, not 17x
+        expected_edge_files = sorted(
+            store.edges_dir.glob("domain=*/bucket_16=*/*.parquet")
+        )
+        assert len(edge_files_read) == len(expected_edge_files)
+        assert len(set(edge_files_read)) == len(expected_edge_files)

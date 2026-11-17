@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from scale_kg.adapters.iceberg_puppygraph import IcebergPuppyGraphStore
 from scale_kg.adapters.in_memory import InMemoryGraphStore
-from scale_kg.core.guardrails import GuardrailViolationError
+from scale_kg.core.guardrails import GuardrailEnforcer, GuardrailViolationError
 from scale_kg.core.models import (
     Domain,
     EntityNode,
@@ -355,3 +356,201 @@ class TestQueryCoordinatorFederationAndDerivedEdges:
         assert ok.metrics.aborted is False
         assert {n.id for n in ok.nodes} == {"customer:org:one", "product:app:kg"}
         assert ok.metrics.cross_domain_hops == 1
+
+    @pytest.mark.asyncio
+    async def test_derived_rules_deduplicate_target_ids_before_inbound_queries(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = InMemoryGraphStore()
+        coord = QueryCoordinator(store)
+
+        await coord.upsert_nodes(
+            [
+                EntityNode(
+                    id="customer:org:u1",
+                    domain=Domain.CUSTOMER,
+                    entity_type="Organization",
+                ),
+                EntityNode(
+                    id="customer:org:u2",
+                    domain=Domain.CUSTOMER,
+                    entity_type="Organization",
+                ),
+                EntityNode(
+                    id="customer:org:u3",
+                    domain=Domain.CUSTOMER,
+                    entity_type="Organization",
+                ),
+                EntityNode(
+                    id="technology:lang:python",
+                    domain=Domain.TECHNOLOGY,
+                    entity_type="Language",
+                ),
+            ]
+        )
+        await coord.upsert_edges(
+            [
+                # u1 points to python via two distinct edge types (same target w)
+                RelationshipEdge(
+                    source_id="customer:org:u1",
+                    target_id="technology:lang:python",
+                    edge_type="USES",
+                    domain=Domain.CUSTOMER,
+                    target_domain=Domain.TECHNOLOGY,
+                ),
+                RelationshipEdge(
+                    source_id="customer:org:u1",
+                    target_id="technology:lang:python",
+                    edge_type="DEPENDS_ON",
+                    domain=Domain.CUSTOMER,
+                    target_domain=Domain.TECHNOLOGY,
+                ),
+                # u1 -> u2 lets BFS collect u2 -> python as well
+                RelationshipEdge(
+                    source_id="customer:org:u1",
+                    target_id="customer:org:u2",
+                    edge_type="PARTNER_OF",
+                    domain=Domain.CUSTOMER,
+                    target_domain=Domain.CUSTOMER,
+                ),
+                RelationshipEdge(
+                    source_id="customer:org:u2",
+                    target_id="technology:lang:python",
+                    edge_type="USES",
+                    domain=Domain.CUSTOMER,
+                    target_domain=Domain.TECHNOLOGY,
+                ),
+                # u3 also uses python so both u1 and u2 derive SIMILAR_TO -> u3
+                RelationshipEdge(
+                    source_id="customer:org:u3",
+                    target_id="technology:lang:python",
+                    edge_type="USES",
+                    domain=Domain.CUSTOMER,
+                    target_domain=Domain.TECHNOLOGY,
+                ),
+            ]
+        )
+
+        in_calls: list[str] = []
+        orig_get_neighbors = store.get_neighbors
+
+        async def _spy_get_neighbors(node_id: str, **kwargs: Any) -> Any:
+            if kwargs.get("direction") == "in":
+                in_calls.append(node_id)
+            return await orig_get_neighbors(node_id, **kwargs)
+
+        monkeypatch.setattr(store, "get_neighbors", _spy_get_neighbors)
+
+        res = await coord.traverse(
+            TraversalRequest(
+                seed_ids=["customer:org:u1"], max_depth=2, include_derived=True
+            )
+        )
+        assert res.metrics.aborted is False
+        derived_pairs = {
+            (e.source_id, e.target_id, e.edge_type) for e in res.edges if e.is_derived
+        }
+        assert ("customer:org:u1", "customer:org:u3", "SIMILAR_TO") in derived_pairs
+        assert ("customer:org:u2", "customer:org:u3", "SIMILAR_TO") in derived_pairs
+        assert in_calls.count("technology:lang:python") == 1
+
+    @pytest.mark.asyncio
+    async def test_derived_rules_enforce_max_results_and_max_execution_seconds(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        now = [0.0]
+        enforcer = GuardrailEnforcer(clock=lambda: now[0])
+        store = InMemoryGraphStore(enforcer=enforcer)
+        coord = QueryCoordinator(store, enforcer=enforcer)
+
+        await coord.upsert_nodes(
+            [
+                EntityNode(
+                    id="customer:org:u",
+                    domain=Domain.CUSTOMER,
+                    entity_type="Organization",
+                ),
+                EntityNode(
+                    id="customer:org:v1",
+                    domain=Domain.CUSTOMER,
+                    entity_type="Organization",
+                ),
+                EntityNode(
+                    id="customer:org:v2",
+                    domain=Domain.CUSTOMER,
+                    entity_type="Organization",
+                ),
+                EntityNode(
+                    id="technology:lang:python",
+                    domain=Domain.TECHNOLOGY,
+                    entity_type="Language",
+                ),
+            ]
+        )
+        await coord.upsert_edges(
+            [
+                RelationshipEdge(
+                    source_id="customer:org:u",
+                    target_id="technology:lang:python",
+                    edge_type="USES",
+                    domain=Domain.CUSTOMER,
+                    target_domain=Domain.TECHNOLOGY,
+                ),
+                RelationshipEdge(
+                    source_id="customer:org:v1",
+                    target_id="technology:lang:python",
+                    edge_type="USES",
+                    domain=Domain.CUSTOMER,
+                    target_domain=Domain.TECHNOLOGY,
+                ),
+                RelationshipEdge(
+                    source_id="customer:org:v2",
+                    target_id="technology:lang:python",
+                    edge_type="USES",
+                    domain=Domain.CUSTOMER,
+                    target_domain=Domain.TECHNOLOGY,
+                ),
+            ]
+        )
+
+        # BFS collects {u, python} (2 nodes <= max_results=2); SIMILAR_TO pushes past max_results
+        res_cap = await coord.traverse(
+            TraversalRequest(
+                seed_ids=["customer:org:u"],
+                max_depth=1,
+                max_results=2,
+                include_derived=True,
+            )
+        )
+        assert res_cap.metrics.aborted is True
+        assert res_cap.metrics.violation is not None
+        assert (
+            res_cap.metrics.violation.code
+            == GuardrailViolationCode.MAX_RESULTS_EXCEEDED
+        )
+        assert coord.stats().derived_edges_computed == 0
+        assert coord.stats().hot_paths_promoted == 0
+
+        # Advancing clock during inbound derived-rule lookup triggers timeout abort
+        orig_get_neighbors = store.get_neighbors
+
+        async def _slow_in_neighbors(node_id: str, **kwargs: Any) -> Any:
+            if kwargs.get("direction") == "in":
+                now[0] += 0.5
+            return await orig_get_neighbors(node_id, **kwargs)
+
+        monkeypatch.setattr(store, "get_neighbors", _slow_in_neighbors)
+        res_timeout = await coord.traverse(
+            TraversalRequest(
+                seed_ids=["customer:org:u"],
+                max_depth=1,
+                max_execution_seconds=0.1,
+                include_derived=True,
+            )
+        )
+        assert res_timeout.metrics.aborted is True
+        assert res_timeout.metrics.violation is not None
+        assert (
+            res_timeout.metrics.violation.code
+            == GuardrailViolationCode.MAX_EXECUTION_TIME_EXCEEDED
+        )

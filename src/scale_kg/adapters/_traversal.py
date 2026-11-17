@@ -19,7 +19,7 @@ from scale_kg.core.supernode import BUCKET_EDGE_TYPE, SupernodeBucketer
 
 NodeFetcher = Callable[[str], Awaitable[EntityNode | None]]
 OutEdgeFetcher = Callable[[str], Awaitable[list[RelationshipEdge]]]
-InEdgeFetcher = Callable[[str], Awaitable[list[RelationshipEdge]]]
+InEdgeFetcher = Callable[[Sequence[str]], Awaitable[list[RelationshipEdge]]]
 
 
 def candidate_bucket_ids(node_id: str, num_buckets: int = 16) -> list[str]:
@@ -256,10 +256,9 @@ async def resolve_logical_neighbors(
             await _collect_from_edges(await fetch_out_edges(cid), is_outbound=True)
 
     if direction in ("in", "both") and len(results) < limit:
-        for cid in candidate_ids:
-            if len(results) >= limit:
-                break
-            await _collect_from_edges(await fetch_in_edges(cid), is_outbound=False)
+        await _collect_from_edges(
+            await fetch_in_edges(candidate_ids), is_outbound=False
+        )
 
     return results[:limit]
 
