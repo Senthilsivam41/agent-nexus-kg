@@ -252,13 +252,20 @@ class QueryCoordinator:
             tuple[str, tuple[str, ...]], dict[str, EntityNode]
         ] = {}
 
-        def _budget_exceeded() -> bool:
+        def _budget_exceeded(
+            *,
+            extra_nodes: int = 0,
+            extra_synthesized: int = 0,
+        ) -> bool:
             if tracker is None:
                 return False
             violation = tracker.check_step(
                 depth=depth_reached,
                 expanded_nodes=nodes_expanded,
-                results_count=max(len(collected_nodes), len(synthesized)),
+                results_count=max(
+                    len(collected_nodes) + extra_nodes,
+                    len(synthesized) + extra_synthesized,
+                ),
             )
             return violation is not None
 
@@ -280,6 +287,11 @@ class QueryCoordinator:
             key = (src_id, dst_node.id, edge_type)
             if key in seen_derived or key in collected_edges:
                 return True
+            if _budget_exceeded(
+                extra_nodes=0 if dst_node.id in collected_nodes else 1,
+                extra_synthesized=1,
+            ):
+                return False
             seen_derived.add(key)
             is_hot = key in self.promoted_hot_paths
             derived_edge = RelationshipEdge(
@@ -298,11 +310,11 @@ class QueryCoordinator:
             if tuple(path) not in seen_paths:
                 seen_paths.add(tuple(path))
                 logical_paths.append(path)
-            return not _budget_exceeded()
+            return True
 
         for rule in self.derived_rules:
             if _budget_exceeded():
-                break
+                return synthesized
             if allowed_edge_types and rule.derived_edge_type not in allowed_edge_types:
                 continue
 
@@ -311,11 +323,9 @@ class QueryCoordinator:
                 for edge in core_edges:
                     out_by_src[edge.source_id].append(edge)
 
-                aborted_rule = False
                 for e1 in core_edges:
                     if _budget_exceeded():
-                        aborted_rule = True
-                        break
+                        return synthesized
                     if (
                         rule.first_edge_types
                         and e1.edge_type not in rule.first_edge_types
@@ -337,12 +347,7 @@ class QueryCoordinator:
                             e1.domain,
                             {"derived_rule": rule.name, "via": e1.target_id},
                         ):
-                            aborted_rule = True
-                            break
-                    if aborted_rule:
-                        break
-                if aborted_rule:
-                    break
+                            return synthesized
 
             elif rule.pattern == "shared_neighbor":
                 # For every core edge u -> w, discover peers v != u that also point to w.
@@ -366,15 +371,9 @@ class QueryCoordinator:
                     if rule.second_edge_types
                     else ()
                 )
-                in_limit = (
-                    min(
-                        self._enforcer.config.max_results,
-                        tracker.max_results + len(core_edges) + 1,
-                    )
-                    if tracker is not None
-                    else self._enforcer.config.max_results
+                allowed_domains_list = (
+                    list(allowed_domains) if allowed_domains else None
                 )
-                aborted_rule = False
                 for src_id, targets in targets_by_src.items():
                     src_node = collected_nodes.get(src_id)
                     if src_node is None:
@@ -384,29 +383,26 @@ class QueryCoordinator:
                     via_examples: dict[str, str] = {}
                     for target_id in targets:
                         if _budget_exceeded():
-                            aborted_rule = True
-                            break
+                            return synthesized
                         cache_key = (target_id, second_edge_types_key)
                         peers_for_target = in_peers_by_target.get(cache_key)
                         if peers_for_target is None:
                             peers_for_target = {}
                             for shard in unique_shards:
                                 if _budget_exceeded():
-                                    aborted_rule = True
-                                    break
+                                    return synthesized
                                 in_neighbors = await shard.get_neighbors(
                                     target_id,
                                     edge_types=rule.second_edge_types,
+                                    domains=allowed_domains_list,
                                     direction="in",
-                                    limit=in_limit,
+                                    limit=self._enforcer.config.max_results,
                                 )
                                 if _budget_exceeded():
-                                    aborted_rule = True
-                                    break
+                                    return synthesized
                                 for in_edge, peer in in_neighbors:
                                     if _budget_exceeded():
-                                        aborted_rule = True
-                                        break
+                                        return synthesized
                                     if in_edge.is_derived:
                                         continue
                                     (
@@ -416,10 +412,6 @@ class QueryCoordinator:
                                         peer, in_edge
                                     )
                                     peers_for_target[real_peer.id] = real_peer
-                                if aborted_rule:
-                                    break
-                            if aborted_rule:
-                                break
                             in_peers_by_target[cache_key] = peers_for_target
 
                         for peer_id, real_peer in peers_for_target.items():
@@ -428,9 +420,6 @@ class QueryCoordinator:
                             shared_counts[peer_id] += 1
                             peer_nodes[peer_id] = real_peer
                             via_examples.setdefault(peer_id, target_id)
-
-                    if aborted_rule:
-                        break
 
                     for peer_id, count in sorted(shared_counts.items()):
                         if count < rule.min_shared_neighbors:
@@ -446,12 +435,7 @@ class QueryCoordinator:
                                 "via": via_examples[peer_id],
                             },
                         ):
-                            aborted_rule = True
-                            break
-                    if aborted_rule:
-                        break
-                if aborted_rule:
-                    break
+                            return synthesized
 
         return synthesized
 
@@ -527,7 +511,7 @@ class QueryCoordinator:
         def _abort(violation) -> TraversalResult:
             return tracker.build_aborted_result(
                 violation=violation,
-                nodes=list(collected_nodes.values()),
+                nodes=list(collected_nodes.values())[: tracker.max_results],
                 edges=list(collected_edges.values()),
                 paths=logical_paths,
                 depth_reached=depth_reached,

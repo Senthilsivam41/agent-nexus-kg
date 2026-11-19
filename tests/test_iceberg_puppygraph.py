@@ -395,15 +395,18 @@ class TestIcebergPuppyGraphStore:
             == GuardrailViolationCode.MAX_RESULTS_EXCEEDED
         )
 
+    @pytest.mark.parametrize("cache_partitions", [False, True])
     async def test_local_in_neighbors_scans_each_edge_parquet_file_once_for_all_buckets(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cache_partitions: bool
     ) -> None:
         nodes, edges = _build_multi_bucket_dataset()
         bucketer = SupernodeBucketer(degree_threshold=20, num_buckets=16)
         b_nodes, b_edges, supernodes = bucketer.transform_dataset(nodes, edges)
         assert "technology:lang:python" in supernodes
 
-        store = IcebergPuppyGraphStore(tmp_path / "warehouse")
+        store = IcebergPuppyGraphStore(
+            tmp_path / "warehouse", cache_partitions=cache_partitions
+        )
         await store.upsert_nodes(b_nodes)
         await store.upsert_edges(b_edges)
 

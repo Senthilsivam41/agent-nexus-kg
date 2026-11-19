@@ -528,6 +528,8 @@ class TestQueryCoordinatorFederationAndDerivedEdges:
             res_cap.metrics.violation.code
             == GuardrailViolationCode.MAX_RESULTS_EXCEEDED
         )
+        assert len(res_cap.nodes) == 2
+        assert res_cap.metrics.results_returned == 2
         assert coord.stats().derived_edges_computed == 0
         assert coord.stats().hot_paths_promoted == 0
 
@@ -554,3 +556,133 @@ class TestQueryCoordinatorFederationAndDerivedEdges:
             res_timeout.metrics.violation.code
             == GuardrailViolationCode.MAX_EXECUTION_TIME_EXCEEDED
         )
+
+    @pytest.mark.asyncio
+    async def test_shared_neighbor_does_not_truncate_peers_with_small_max_results(
+        self,
+    ) -> None:
+        from scale_kg.routing.coordinator import DerivedEdgeRule
+
+        store = InMemoryGraphStore()
+        coord = QueryCoordinator(
+            store,
+            derived_rules=[
+                DerivedEdgeRule(
+                    name="strong_similar_to",
+                    derived_edge_type="SIMILAR_TO",
+                    pattern="shared_neighbor",
+                    min_shared_neighbors=2,
+                )
+            ],
+        )
+
+        extra_peers = [
+            EntityNode(
+                id=f"customer:org:a{i}",
+                domain=Domain.CUSTOMER,
+                entity_type="Organization",
+            )
+            for i in range(8)
+        ]
+        other_domain_peers = [
+            EntityNode(
+                id=f"product:app:a{i}",
+                domain=Domain.PRODUCT,
+                entity_type="Product",
+            )
+            for i in range(6)
+        ]
+        await coord.upsert_nodes(
+            [
+                EntityNode(
+                    id="customer:org:u",
+                    domain=Domain.CUSTOMER,
+                    entity_type="Organization",
+                ),
+                EntityNode(
+                    id="customer:org:z_match",
+                    domain=Domain.CUSTOMER,
+                    entity_type="Organization",
+                ),
+                EntityNode(
+                    id="technology:lang:python",
+                    domain=Domain.TECHNOLOGY,
+                    entity_type="Language",
+                ),
+                EntityNode(
+                    id="technology:lang:rust",
+                    domain=Domain.TECHNOLOGY,
+                    entity_type="Language",
+                ),
+                *extra_peers,
+                *other_domain_peers,
+            ]
+        )
+        await coord.upsert_edges(
+            [
+                RelationshipEdge(
+                    source_id="customer:org:u",
+                    target_id="technology:lang:python",
+                    edge_type="USES",
+                    domain=Domain.CUSTOMER,
+                    target_domain=Domain.TECHNOLOGY,
+                ),
+                RelationshipEdge(
+                    source_id="customer:org:u",
+                    target_id="technology:lang:rust",
+                    edge_type="USES",
+                    domain=Domain.CUSTOMER,
+                    target_domain=Domain.TECHNOLOGY,
+                ),
+                RelationshipEdge(
+                    source_id="customer:org:z_match",
+                    target_id="technology:lang:python",
+                    edge_type="USES",
+                    domain=Domain.CUSTOMER,
+                    target_domain=Domain.TECHNOLOGY,
+                ),
+                RelationshipEdge(
+                    source_id="customer:org:z_match",
+                    target_id="technology:lang:rust",
+                    edge_type="USES",
+                    domain=Domain.CUSTOMER,
+                    target_domain=Domain.TECHNOLOGY,
+                ),
+                *(
+                    RelationshipEdge(
+                        source_id=n.id,
+                        target_id="technology:lang:python",
+                        edge_type="USES",
+                        domain=Domain.CUSTOMER,
+                        target_domain=Domain.TECHNOLOGY,
+                    )
+                    for n in extra_peers
+                ),
+                *(
+                    RelationshipEdge(
+                        source_id=n.id,
+                        target_id="technology:lang:rust",
+                        edge_type="USES",
+                        domain=Domain.PRODUCT,
+                        target_domain=Domain.TECHNOLOGY,
+                    )
+                    for n in other_domain_peers
+                ),
+            ]
+        )
+
+        # z_match sorts after a0..a7 on python; domains filter also excludes product peers on rust.
+        res = await coord.traverse(
+            TraversalRequest(
+                seed_ids=["customer:org:u"],
+                max_depth=1,
+                max_results=4,
+                domains=[Domain.CUSTOMER, Domain.TECHNOLOGY],
+                include_derived=True,
+            )
+        )
+        assert res.metrics.aborted is False
+        derived_pairs = {
+            (e.source_id, e.target_id, e.edge_type) for e in res.edges if e.is_derived
+        }
+        assert ("customer:org:u", "customer:org:z_match", "SIMILAR_TO") in derived_pairs
