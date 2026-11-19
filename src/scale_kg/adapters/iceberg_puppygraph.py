@@ -6,6 +6,7 @@ import json
 import shutil
 import time
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Literal
 
@@ -508,12 +509,16 @@ class IcebergPuppyGraphStore(GraphStore):
 
     def _read_in_edges_local(
         self,
-        node_id: str,
+        candidate_ids: Sequence[str],
         scanned_tracker: set[Path] | None = None,
         *,
         all_files: list[Path] | None = None,
         partition_cache: dict[Path, dict[str, list[RelationshipEdge]]] | None = None,
     ) -> list[RelationshipEdge]:
+        target_ids = list(dict.fromkeys(candidate_ids))
+        if not target_ids:
+            return []
+
         files = (
             all_files
             if all_files is not None
@@ -533,9 +538,13 @@ class IcebergPuppyGraphStore(GraphStore):
                         edge = self._row_to_edge(row)
                         by_dst.setdefault(edge.target_id, []).append(edge)
                     partition_cache[part_file] = by_dst
-                edges.extend(partition_cache[part_file].get(node_id, ()))
+                by_dst = partition_cache[part_file]
+                for tid in target_ids:
+                    edges.extend(by_dst.get(tid, ()))
             else:
-                table = pq.read_table(part_file, filters=[("target_id", "=", node_id)])
+                table = pq.read_table(
+                    part_file, filters=[("target_id", "in", target_ids)]
+                )
                 for row in table.to_pylist():
                     edges.append(self._row_to_edge(row))
         return edges
@@ -729,9 +738,9 @@ class IcebergPuppyGraphStore(GraphStore):
                 partition_cache=out_cache,
             )
 
-        async def _fetch_in(nid: str) -> list[RelationshipEdge]:
+        async def _fetch_in(cids: Sequence[str]) -> list[RelationshipEdge]:
             return self._read_in_edges_local(
-                nid,
+                cids,
                 scanned_tracker=scanned_edge_files,
                 all_files=all_edge_files,
                 partition_cache=in_cache,

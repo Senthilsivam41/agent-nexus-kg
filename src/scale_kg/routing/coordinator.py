@@ -9,7 +9,11 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from scale_kg.adapters.base import GraphStore, GraphStoreUnavailableError
-from scale_kg.core.guardrails import DERIVED_EDGE_TYPES, GuardrailEnforcer
+from scale_kg.core.guardrails import (
+    DERIVED_EDGE_TYPES,
+    GuardrailEnforcer,
+    RuntimeGuardrailTracker,
+)
 from scale_kg.core.models import (
     Domain,
     EntityNode,
@@ -237,10 +241,33 @@ class QueryCoordinator:
         effective_max_depth: int,
         allowed_domains: set[Domain] | None,
         allowed_edge_types: set[str] | None,
+        tracker: RuntimeGuardrailTracker | None = None,
+        depth_reached: int = 0,
+        nodes_expanded: int = 0,
     ) -> list[RelationshipEdge]:
         core_edges = [e for e in collected_edges.values() if not e.is_derived]
         synthesized: list[RelationshipEdge] = []
         seen_derived: set[tuple[str, str, str]] = set()
+        in_peers_by_target: dict[
+            tuple[str, tuple[str, ...]], dict[str, EntityNode]
+        ] = {}
+
+        def _budget_exceeded(
+            *,
+            extra_nodes: int = 0,
+            extra_synthesized: int = 0,
+        ) -> bool:
+            if tracker is None:
+                return False
+            violation = tracker.check_step(
+                depth=depth_reached,
+                expanded_nodes=nodes_expanded,
+                results_count=max(
+                    len(collected_nodes) + extra_nodes,
+                    len(synthesized) + extra_synthesized,
+                ),
+            )
+            return violation is not None
 
         def _maybe_add_derived(
             src_id: str,
@@ -248,16 +275,23 @@ class QueryCoordinator:
             edge_type: str,
             src_domain: Domain,
             routing_props: dict[str, str | int | float | bool],
-        ) -> None:
+        ) -> bool:
+            if tracker is not None and tracker.last_violation is not None:
+                return False
             if src_id == dst_node.id:
-                return
+                return True
             if allowed_edge_types and edge_type not in allowed_edge_types:
-                return
+                return True
             if allowed_domains and dst_node.domain not in allowed_domains:
-                return
+                return True
             key = (src_id, dst_node.id, edge_type)
             if key in seen_derived or key in collected_edges:
-                return
+                return True
+            if _budget_exceeded(
+                extra_nodes=0 if dst_node.id in collected_nodes else 1,
+                extra_synthesized=1,
+            ):
+                return False
             seen_derived.add(key)
             is_hot = key in self.promoted_hot_paths
             derived_edge = RelationshipEdge(
@@ -276,8 +310,11 @@ class QueryCoordinator:
             if tuple(path) not in seen_paths:
                 seen_paths.add(tuple(path))
                 logical_paths.append(path)
+            return True
 
         for rule in self.derived_rules:
+            if _budget_exceeded():
+                return synthesized
             if allowed_edge_types and rule.derived_edge_type not in allowed_edge_types:
                 continue
 
@@ -287,6 +324,8 @@ class QueryCoordinator:
                     out_by_src[edge.source_id].append(edge)
 
                 for e1 in core_edges:
+                    if _budget_exceeded():
+                        return synthesized
                     if (
                         rule.first_edge_types
                         and e1.edge_type not in rule.first_edge_types
@@ -301,57 +340,91 @@ class QueryCoordinator:
                         dst_node = collected_nodes.get(e2.target_id)
                         if dst_node is None:
                             continue
-                        _maybe_add_derived(
+                        if not _maybe_add_derived(
                             e1.source_id,
                             dst_node,
                             rule.derived_edge_type,
                             e1.domain,
                             {"derived_rule": rule.name, "via": e1.target_id},
-                        )
+                        ):
+                            return synthesized
 
             elif rule.pattern == "shared_neighbor":
                 # For every core edge u -> w, discover peers v != u that also point to w.
-                out_by_src_w: dict[str, list[RelationshipEdge]] = defaultdict(list)
+                targets_by_src: dict[str, list[str]] = defaultdict(list)
+                seen_targets_by_src: dict[str, set[str]] = defaultdict(set)
                 for edge in core_edges:
+                    if edge.source_id not in collected_nodes:
+                        continue
                     if (
                         rule.first_edge_types
                         and edge.edge_type not in rule.first_edge_types
                     ):
                         continue
-                    out_by_src_w[edge.source_id].append(edge)
+                    if edge.target_id not in seen_targets_by_src[edge.source_id]:
+                        seen_targets_by_src[edge.source_id].add(edge.target_id)
+                        targets_by_src[edge.source_id].append(edge.target_id)
 
                 unique_shards = self._unique_shards()
-                for src_id, out_edges in out_by_src_w.items():
+                second_edge_types_key = (
+                    tuple(sorted(rule.second_edge_types))
+                    if rule.second_edge_types
+                    else ()
+                )
+                allowed_domains_list = (
+                    list(allowed_domains) if allowed_domains else None
+                )
+                for src_id, targets in targets_by_src.items():
                     src_node = collected_nodes.get(src_id)
                     if src_node is None:
                         continue
                     shared_counts: Counter[str] = Counter()
                     peer_nodes: dict[str, EntityNode] = {}
                     via_examples: dict[str, str] = {}
-                    for edge in out_edges:
-                        for shard in unique_shards:
-                            in_neighbors = await shard.get_neighbors(
-                                edge.target_id,
-                                edge_types=rule.second_edge_types,
-                                direction="in",
-                                limit=self._enforcer.config.max_results,
-                            )
-                            for in_edge, peer in in_neighbors:
-                                if in_edge.is_derived or peer.id == src_id:
-                                    continue
-                                real_peer, _ = await self._resolve_neighbor_real_node(
-                                    peer, in_edge
+                    for target_id in targets:
+                        if _budget_exceeded():
+                            return synthesized
+                        cache_key = (target_id, second_edge_types_key)
+                        peers_for_target = in_peers_by_target.get(cache_key)
+                        if peers_for_target is None:
+                            peers_for_target = {}
+                            for shard in unique_shards:
+                                if _budget_exceeded():
+                                    return synthesized
+                                in_neighbors = await shard.get_neighbors(
+                                    target_id,
+                                    edge_types=rule.second_edge_types,
+                                    domains=allowed_domains_list,
+                                    direction="in",
+                                    limit=self._enforcer.config.max_results,
                                 )
-                                if real_peer.id == src_id:
-                                    continue
-                                shared_counts[real_peer.id] += 1
-                                peer_nodes[real_peer.id] = real_peer
-                                via_examples.setdefault(real_peer.id, edge.target_id)
+                                if _budget_exceeded():
+                                    return synthesized
+                                for in_edge, peer in in_neighbors:
+                                    if _budget_exceeded():
+                                        return synthesized
+                                    if in_edge.is_derived:
+                                        continue
+                                    (
+                                        real_peer,
+                                        _,
+                                    ) = await self._resolve_neighbor_real_node(
+                                        peer, in_edge
+                                    )
+                                    peers_for_target[real_peer.id] = real_peer
+                            in_peers_by_target[cache_key] = peers_for_target
+
+                        for peer_id, real_peer in peers_for_target.items():
+                            if peer_id == src_id:
+                                continue
+                            shared_counts[peer_id] += 1
+                            peer_nodes[peer_id] = real_peer
+                            via_examples.setdefault(peer_id, target_id)
 
                     for peer_id, count in sorted(shared_counts.items()):
                         if count < rule.min_shared_neighbors:
                             continue
-                        _maybe_add_derived(
+                        if not _maybe_add_derived(
                             src_id,
                             peer_nodes[peer_id],
                             rule.derived_edge_type,
@@ -361,7 +434,8 @@ class QueryCoordinator:
                                 "shared_count": count,
                                 "via": via_examples[peer_id],
                             },
-                        )
+                        ):
+                            return synthesized
 
         return synthesized
 
@@ -437,7 +511,7 @@ class QueryCoordinator:
         def _abort(violation) -> TraversalResult:
             return tracker.build_aborted_result(
                 violation=violation,
-                nodes=list(collected_nodes.values()),
+                nodes=list(collected_nodes.values())[: tracker.max_results],
                 edges=list(collected_edges.values()),
                 paths=logical_paths,
                 depth_reached=depth_reached,
@@ -525,7 +599,12 @@ class QueryCoordinator:
                 effective_max_depth=effective_max_depth,
                 allowed_domains=allowed_domains,
                 allowed_edge_types=allowed_edge_types,
+                tracker=tracker,
+                depth_reached=depth_reached,
+                nodes_expanded=nodes_expanded,
             )
+            if tracker.last_violation is not None:
+                return _abort(tracker.last_violation)
             self._derived_edges_computed += len(derived)
             promoted_or_derived = await self._record_and_promote_hot_paths(derived)
             for d_edge in promoted_or_derived:

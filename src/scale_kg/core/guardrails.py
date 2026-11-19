@@ -65,6 +65,12 @@ class RuntimeGuardrailTracker:
         )
         self._clock = clock
         self._started_at = clock()
+        self.last_violation: GuardrailViolation | None = None
+
+    @property
+    def max_results(self) -> int:
+        """Maximum result count allowed for this traversal."""
+        return self._max_results
 
     @property
     def elapsed_seconds(self) -> float:
@@ -80,15 +86,16 @@ class RuntimeGuardrailTracker:
     ) -> GuardrailViolation | None:
         """Evaluate runtime budgets and return structured violation metadata if breached."""
         if depth > self._max_depth:
-            return GuardrailViolation(
+            self.last_violation = GuardrailViolation(
                 code=GuardrailViolationCode.MAX_DEPTH_EXCEEDED,
                 message=f"Traversal depth {depth} exceeded limit {self._max_depth}.",
                 limit=self._max_depth,
                 observed=depth,
                 phase="runtime",
             )
+            return self.last_violation
         if expanded_nodes > self._max_expanded_nodes:
-            return GuardrailViolation(
+            self.last_violation = GuardrailViolation(
                 code=GuardrailViolationCode.MAX_EXPANDED_NODES_EXCEEDED,
                 message=(
                     f"Expanded nodes {expanded_nodes} exceeded limit "
@@ -98,8 +105,9 @@ class RuntimeGuardrailTracker:
                 observed=expanded_nodes,
                 phase="runtime",
             )
+            return self.last_violation
         if results_count > self._max_results:
-            return GuardrailViolation(
+            self.last_violation = GuardrailViolation(
                 code=GuardrailViolationCode.MAX_RESULTS_EXCEEDED,
                 message=(
                     f"Result count {results_count} exceeded limit {self._max_results}."
@@ -108,9 +116,10 @@ class RuntimeGuardrailTracker:
                 observed=results_count,
                 phase="runtime",
             )
+            return self.last_violation
         elapsed = self.elapsed_seconds
         if elapsed > self._max_execution_seconds:
-            return GuardrailViolation(
+            self.last_violation = GuardrailViolation(
                 code=GuardrailViolationCode.MAX_EXECUTION_TIME_EXCEEDED,
                 message=(
                     f"Execution time {elapsed:.3f}s exceeded limit "
@@ -120,6 +129,7 @@ class RuntimeGuardrailTracker:
                 observed=round(elapsed, 6),
                 phase="runtime",
             )
+            return self.last_violation
         return None
 
     def enforce_step(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
+from collections.abc import Sequence
 from typing import Literal
 
 from scale_kg.adapters._traversal import resolve_logical_neighbors, run_guarded_bfs
@@ -127,15 +128,21 @@ class InMemoryGraphStore(GraphStore):
                 out.extend(edges)
         return out
 
-    async def _fetch_in_edges(self, node_id: str) -> list[RelationshipEdge]:
-        domain = self._node_domain.get(node_id)
-        self._fault.check(domain)
+    async def _fetch_in_edges(
+        self, candidate_ids: Sequence[str]
+    ) -> list[RelationshipEdge]:
+        target_ids = list(dict.fromkeys(candidate_ids))
+        if not target_ids:
+            return []
         incoming: list[RelationshipEdge] = []
-        for d in Domain:
-            edges = self._in_edges[d].get(node_id)
-            if edges:
-                self._fault.check(d)
-                incoming.extend(edges)
+        for tid in target_ids:
+            domain = self._node_domain.get(tid)
+            self._fault.check(domain)
+            for d in Domain:
+                edges = self._in_edges[d].get(tid)
+                if edges:
+                    self._fault.check(d)
+                    incoming.extend(edges)
         return incoming
 
     async def get_neighbors(
