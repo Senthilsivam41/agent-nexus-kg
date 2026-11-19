@@ -509,17 +509,13 @@ class IcebergPuppyGraphStore(GraphStore):
 
     def _read_in_edges_local(
         self,
-        candidate_ids: str | Sequence[str],
+        candidate_ids: Sequence[str],
         scanned_tracker: set[Path] | None = None,
         *,
         all_files: list[Path] | None = None,
         partition_cache: dict[Path, dict[str, list[RelationshipEdge]]] | None = None,
     ) -> list[RelationshipEdge]:
-        target_ids = (
-            [candidate_ids]
-            if isinstance(candidate_ids, str)
-            else list(dict.fromkeys(candidate_ids))
-        )
+        target_ids = list(dict.fromkeys(candidate_ids))
         if not target_ids:
             return []
 

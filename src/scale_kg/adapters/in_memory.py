@@ -129,13 +129,9 @@ class InMemoryGraphStore(GraphStore):
         return out
 
     async def _fetch_in_edges(
-        self, candidate_ids: str | Sequence[str]
+        self, candidate_ids: Sequence[str]
     ) -> list[RelationshipEdge]:
-        target_ids = (
-            [candidate_ids]
-            if isinstance(candidate_ids, str)
-            else list(dict.fromkeys(candidate_ids))
-        )
+        target_ids = list(dict.fromkeys(candidate_ids))
         if not target_ids:
             return []
         incoming: list[RelationshipEdge] = []

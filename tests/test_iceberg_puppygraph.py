@@ -407,11 +407,11 @@ class TestIcebergPuppyGraphStore:
         await store.upsert_nodes(b_nodes)
         await store.upsert_edges(b_edges)
 
-        read_in_calls: list[str | Sequence[str]] = []
+        read_in_calls: list[Sequence[str]] = []
         orig_read_in = store._read_in_edges_local
 
         def _spy_read_in(
-            candidate_ids: str | Sequence[str],
+            candidate_ids: Sequence[str],
             scanned_tracker: set[Path] | None = None,
             *,
             all_files: list[Path] | None = None,
