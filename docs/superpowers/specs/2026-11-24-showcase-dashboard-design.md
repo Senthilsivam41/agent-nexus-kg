@@ -14,18 +14,19 @@ Build a self-explanatory, auto-updating showcase dashboard and live interactive 
 ### Locked Decisions
 1. **Delivery Mode (Hybrid):**
    - **Live mode:** Mounted directly inside `scale_kg.api.app:create_app()` at `/showcase` and `/showcase/api/*` (opt-out via `enable_showcase: bool = True`).
-   - **Static mode:** Same zero-build frontend bundle exported to `dist/showcase/` alongside `snapshot.json` and rolling `history.json`, automatically published to GitHub Pages on pushes to `main` and attached as a diffed preview on PRs.
+   - **Static mode:** Same zero-build frontend bundle exported to `dist/showcase/` alongside `snapshot.json` and rolling `history.json`, automatically deployed to **Netlify** at **`https://scale-kg.labbys-aoai.in`** (Hostinger subdomain CNAME) on pushes to `main` and deployed as Netlify PR previews on pull requests.
 2. **Core Narrative (Both Engine Switching & Load/Mechanism Switching):**
    - **How it handles load:** Progressive local scale ladder (`micro` → `local` → `cluster` presets), supernode degree ramp crossing `supernode_degree_threshold`, 3-hit derived-edge hot-path promotion, cross-domain Hop-0 + Ghost/Proxy federation, live Lean-Graph and runtime guardrail probes, 5-stage Hybrid GraphRAG RRF + selective Parquet hydration, and empirically calibrated 100M → 1B → 10B projections.
    - **How it switches engines:** Side-by-side `GraphStore` adapter switchboard (`InMemoryGraphStore`, `IcebergPuppyGraphStore` local PyArrow, auto-detected Docker `Neo4jGraphStore`/`HugeGraphStore`/remote PuppyGraph, and clearly badged Tier-2 contract stubs `JanusGraphStore`/`NebulaGraphStore`) showing 100% Golden Query parity (`GQ-01`..`GQ-07`), 7-workload benchmarks, and live Gate 2 weighted ADR scoring across 100M / 1B / 10B scale targets.
 3. **Frontend Stack (Zero-Build):**
    - Pure vanilla HTML5, CSS3, and native ES modules with inline SVG charts (`src/scale_kg/showcase/static/`).
-   - Zero Node.js/npm toolchain, zero third-party runtime CDN dependencies, zero drift between live FastAPI and static GitHub Pages builds.
+   - Zero Node.js/npm toolchain, zero third-party runtime CDN dependencies, zero drift between live FastAPI and static Netlify builds.
 4. **Concurrency Target (Up to 50 Concurrent Users):**
-   - Architected for 50 concurrent dashboard users on a single Uvicorn async worker via immutable pre-warmed snapshot bytes, pre-seeded read-only multi-adapter playground, ephemeral micro-coordinators for mutation demos, and a `SingleFlightJobRunner` with parameter coalescing, bounded worker semaphore, TTL cache, and `429 Retry-After` backpressure.
+   - Live FastAPI mode architected for 50 concurrent dashboard users on a single Uvicorn async worker via immutable pre-warmed snapshot bytes, pre-seeded read-only multi-adapter playground, ephemeral micro-coordinators for mutation demos, and a `SingleFlightJobRunner` with parameter coalescing, bounded worker semaphore, TTL cache, and `429 Retry-After` backpressure.
+   - Public static site on Netlify CDN scales effortlessly beyond 50 concurrent users with edge caching and atomic deploys.
 5. **Auto-Update on Implementation Changes:**
    - Runtime Python introspection reads `ScaleKGConfig`, `Domain`, registered `GraphStore` adapters + `AdapterCostProfile`, `GoldenQuerySuite`, `SCALE_PRESETS`, and FastAPI routes directly from live code—no hardcoded UI thresholds or engine tables.
-   - GitHub Actions workflow (`.github/workflows/showcase.yml`) rebuilds `dist/showcase/` on code/config changes, updates rolling commit trend `history.json` (up to 100 commits) on `main`, publishes GitHub Pages, and writes a benchmark delta table to `$GITHUB_STEP_SUMMARY` on PRs.
+   - GitHub Actions workflow (`.github/workflows/showcase.yml`) rebuilds `dist/showcase/` on code/config changes, merges rolling commit trend `history.json` (up to 100 commits) fetched from `https://scale-kg.labbys-aoai.in/history.json`, deploys to Netlify production (`scale-kg.labbys-aoai.in`) on `main`, and deploys a Netlify preview + benchmark delta table to `$GITHUB_STEP_SUMMARY` on PRs.
 
 ---
 
@@ -57,7 +58,8 @@ src/scale_kg/showcase/
   - `showcase_require_auth: bool = False`
   When `enable_showcase=True`, mounts the showcase router at `/showcase` and `/showcase/api/*` without altering any `/v1/*` or gRPC contract.
 - **`Makefile`:** Adds `showcase-build` and `showcase` targets alongside existing `setup`, `demo`, `dev`, and `check`.
-- **`portfolio.yaml`:** Documents the `/showcase` UI and `/showcase/api/snapshot` endpoints as additive interface metadata.
+- **`netlify.toml` & `.gitignore`:** Root `netlify.toml` declares `publish = "dist/showcase"`, security headers, and cache policies (`snapshot.json`/`history.json` short TTL with revalidation; static assets cached); `.gitignore` ignores `.netlify/`.
+- **`portfolio.yaml`:** Documents the `/showcase` UI, `/showcase/api/snapshot` endpoint, and public URL (`https://scale-kg.labbys-aoai.in`) as additive interface metadata.
 
 ```mermaid
 flowchart LR
@@ -180,7 +182,7 @@ To sustain **50 concurrent users** smoothly on a single FastAPI/Uvicorn async wo
 
 ---
 
-## 6. Auto-Update & CI Pipeline (`build.py` & `.github/workflows/showcase.yml`)
+## 6. Auto-Update, Netlify Hosting & Hostinger Subdomain (`build.py`, `netlify.toml`, `.github/workflows/showcase.yml`)
 
 ### Local & CI Static Builder (`scale_kg.showcase.build`)
 ```bash
@@ -201,18 +203,41 @@ dist/showcase/
 └── history.json        # Rolling commit trend (max 100 entries, deduplicated by git_sha)
 ```
 
+### Netlify Configuration (`netlify.toml`)
+- Includes `"$schema" = "https://open-api.netlify.com/netlify.schema.json"` and `[build] publish = "dist/showcase"`.
+- Global `[[headers]]`:
+  - `/*`: `X-Content-Type-Options = "nosniff"`, `Referrer-Policy = "strict-origin-when-cross-origin"`, `X-Frame-Options = "DENY"`, strict `Content-Security-Policy` allowing only `'self'` scripts/styles/data.
+  - `/snapshot.json` and `/history.json`: `Cache-Control = "public, max-age=60, must-revalidate"` so newly deployed benchmark commits reflect immediately.
+  - `/styles.css`, `/app.js`, `/charts.js`, `/views.js`: `Cache-Control = "public, max-age=3600"`.
+- `.gitignore` adds `.netlify` so local linking state (`.netlify/state.json`) is never committed.
+
+### Custom Subdomain on Hostinger (`scale-kg.labbys-aoai.in`)
+1. Provision a dedicated Netlify site (via Netlify MCP or CLI) linked to `dist/showcase`, with GitHub Actions performing atomic deploys (avoiding Netlify build-image Python/uv drift).
+2. Attach custom domain `scale-kg.labbys-aoai.in` to the Netlify site.
+3. In Hostinger DNS Zone for `labbys-aoai.in`, add a single DNS record:
+   - **Type:** `CNAME`
+   - **Name / Host:** `scale-kg`
+   - **Target:** `<netlify-site-slug>.netlify.app`
+   - **TTL:** `300` (or Auto)
+4. Netlify provisions and auto-renews the Let's Encrypt HTTPS certificate automatically once CNAME propagation completes.
+
 ### GitHub Actions Workflow (`.github/workflows/showcase.yml`)
 - **Triggers:**
-  - `push` to `main` (paths: `src/scale_kg/**`, `pyproject.toml`, `Makefile`, `.github/workflows/showcase.yml`)
+  - `push` to `main` (paths: `src/scale_kg/**`, `pyproject.toml`, `Makefile`, `netlify.toml`, `.github/workflows/showcase.yml`)
   - `pull_request` (same paths)
   - `workflow_dispatch` (manual refresh, optional `include_cluster` input)
-- **Build Job:**
+- **Required Repository Secrets (set once in GitHub Settings → Secrets):**
+  - `NETLIFY_AUTH_TOKEN`
+  - `NETLIFY_SITE_ID`
+- **Build & Deploy Steps:**
   1. Checks out repo and installs locked deps (`make setup`).
-  2. Attempts to fetch prior `history.json` from the live Pages URL (graceful empty-list fallback on first deploy or unreachable endpoint).
-  3. Runs `python -m scale_kg.showcase.build --presets micro,local --out dist/showcase --git-sha "$GITHUB_SHA" --git-ref "$GITHUB_REF_NAME"`.
-  4. On `pull_request`: runs a lightweight diff helper comparing current `snapshot.json` against the latest entry in `history.json` (if present), writing a concise Markdown delta table (1/2/3-hop P95, Peak QPS, Golden Parity, Gate 2 Winner, Config Fingerprint change) to `$GITHUB_STEP_SUMMARY` and uploading `dist/showcase` as a workflow artifact.
-- **Deploy Job (`main` only):**
-  - Uses `actions/upload-pages-artifact` + `actions/deploy-pages` with minimal permissions (`pages: write`, `id-token: write`, `contents: read`).
+  2. Attempts to fetch prior `https://scale-kg.labbys-aoai.in/history.json` (graceful empty-list `[]` fallback on first deploy or DNS pre-cutover).
+  3. Runs `uv run python -m scale_kg.showcase.build --presets micro,local --out dist/showcase --git-sha "$GITHUB_SHA" --git-ref "$GITHUB_REF_NAME" --history-in /tmp/prev-history.json`.
+  4. On `pull_request`:
+     - Writes Markdown benchmark delta table (1/2/3-hop P95, Peak QPS, Golden Parity, Gate 2 Winner, Config Fingerprint change) to `$GITHUB_STEP_SUMMARY` and uploads `dist/showcase` as a workflow artifact.
+     - If `NETLIFY_AUTH_TOKEN` & `NETLIFY_SITE_ID` are available (non-fork PR), deploys a Netlify preview alias (`--alias pr-<number>`) and includes the live preview URL in `$GITHUB_STEP_SUMMARY`.
+  5. On `main` push (or `workflow_dispatch`):
+     - Deploys `dist/showcase` atomically to Netlify production (`--prod`), updating `https://scale-kg.labbys-aoai.in` automatically on every merged change.
 
 ---
 
