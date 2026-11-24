@@ -14,6 +14,7 @@
 
 ## Development rules
 
+- Always develop new features on a dedicated branch named `feature/<feature_name>`, then commit, push the branch, and raise a Pull Request instead of committing directly to `main`.
 - Preserve standalone operation and integrate through public contracts.
 - Define or update contracts before changing public API, CLI, event, or configuration behavior.
 - Prefer additive, backward-compatible interface changes.

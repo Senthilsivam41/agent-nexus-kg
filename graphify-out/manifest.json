@@ -1,0 +1,188 @@
+{
+  ".github/workflows/ci.yml": {
+    "mtime": 1794629102.4383714,
+    "seen": 1794631490.2115998,
+    "ast_hash": "3a95629993c59980fca8fd26f2d2203c",
+    "semantic_hash": "3a95629993c59980fca8fd26f2d2203c"
+  },
+  "portfolio.yaml": {
+    "mtime": 1794629101.7668266,
+    "seen": 1794631490.211603,
+    "ast_hash": "24799cf441a2553a7717d3559e491c1a",
+    "semantic_hash": "24799cf441a2553a7717d3559e491c1a"
+  },
+  "pyproject.toml": {
+    "mtime": 1794629195.9456177,
+    "seen": 1794631490.211605,
+    "ast_hash": "bd1a27c77700cf5ff8941d291d046b2e",
+    "semantic_hash": "bd1a27c77700cf5ff8941d291d046b2e"
+  },
+  "src/scale_kg/__init__.py": {
+    "mtime": 1794558309.9193654,
+    "seen": 1794631490.211606,
+    "ast_hash": "01b6574d41a9ba82cafd2d87a2110d56",
+    "semantic_hash": "01b6574d41a9ba82cafd2d87a2110d56"
+  },
+  "src/scale_kg/adapters/__init__.py": {
+    "mtime": 1794624821.3017724,
+    "seen": 1794631490.211606,
+    "ast_hash": "2ff4c97eb9af510ec10f8aac77fc00c4",
+    "semantic_hash": "2ff4c97eb9af510ec10f8aac77fc00c4"
+  },
+  "src/scale_kg/adapters/_traversal.py": {
+    "mtime": 1794629231.913006,
+    "seen": 1794631490.211607,
+    "ast_hash": "dde146bbc8dfe4ba0f0ad50fb0b5feb9",
+    "semantic_hash": "dde146bbc8dfe4ba0f0ad50fb0b5feb9"
+  },
+  "src/scale_kg/adapters/base.py": {
+    "mtime": 1794629231.912826,
+    "seen": 1794631490.211607,
+    "ast_hash": "7dc24ec2fd266e7dcf1b43e6caa23b71",
+    "semantic_hash": "7dc24ec2fd266e7dcf1b43e6caa23b71"
+  },
+  "src/scale_kg/adapters/hugegraph_adapter.py": {
+    "mtime": 1794629231.912946,
+    "seen": 1794631490.2116082,
+    "ast_hash": "d980993a95516c8d6b99a55f43a4718b",
+    "semantic_hash": "d980993a95516c8d6b99a55f43a4718b"
+  },
+  "src/scale_kg/adapters/iceberg_puppygraph.py": {
+    "mtime": 1794629231.9135947,
+    "seen": 1794631490.2116091,
+    "ast_hash": "a1304aebc515c4f46fbfa303f7fd3320",
+    "semantic_hash": "a1304aebc515c4f46fbfa303f7fd3320"
+  },
+  "src/scale_kg/adapters/in_memory.py": {
+    "mtime": 1794624684.7839608,
+    "seen": 1794631490.2116091,
+    "ast_hash": "7f6894eee60fe5d39798369369c79a55",
+    "semantic_hash": "7f6894eee60fe5d39798369369c79a55"
+  },
+  "src/scale_kg/adapters/neo4j_adapter.py": {
+    "mtime": 1794629231.9131029,
+    "seen": 1794631490.21161,
+    "ast_hash": "221ec6b5450f149923426e87a371b9c7",
+    "semantic_hash": "221ec6b5450f149923426e87a371b9c7"
+  },
+  "src/scale_kg/adapters/stubs.py": {
+    "mtime": 1794629231.9131465,
+    "seen": 1794631490.21161,
+    "ast_hash": "2cd43b6732c1f8d4543e34e2f9563624",
+    "semantic_hash": "2cd43b6732c1f8d4543e34e2f9563624"
+  },
+  "src/scale_kg/config.py": {
+    "mtime": 1794558313.1244063,
+    "seen": 1794631490.2116108,
+    "ast_hash": "2fa2455632c84a9a8495a0b14bc69aaa",
+    "semantic_hash": "2fa2455632c84a9a8495a0b14bc69aaa"
+  },
+  "src/scale_kg/core/__init__.py": {
+    "mtime": 1794558387.9344018,
+    "seen": 1794631490.2116108,
+    "ast_hash": "e5050cc713ba0957c81fa07710b99a71",
+    "semantic_hash": "e5050cc713ba0957c81fa07710b99a71"
+  },
+  "src/scale_kg/core/guardrails.py": {
+    "mtime": 1794629231.9127128,
+    "seen": 1794631490.211612,
+    "ast_hash": "9da7bec9dc0532a02c1e135a1e9a251e",
+    "semantic_hash": "9da7bec9dc0532a02c1e135a1e9a251e"
+  },
+  "src/scale_kg/core/models.py": {
+    "mtime": 1794558315.9119878,
+    "seen": 1794631490.211612,
+    "ast_hash": "dba492d63418f262a47743540408c124",
+    "semantic_hash": "dba492d63418f262a47743540408c124"
+  },
+  "src/scale_kg/core/supernode.py": {
+    "mtime": 1794629231.9129791,
+    "seen": 1794631490.211613,
+    "ast_hash": "8bed3876b0cf6841a71fe41a52ed7ea2",
+    "semantic_hash": "8bed3876b0cf6841a71fe41a52ed7ea2"
+  },
+  "src/scale_kg/demo.py": {
+    "mtime": 1794629103.2446887,
+    "seen": 1794631490.211613,
+    "ast_hash": "186bd72b5e6fe705a5fa4dcf28596c17",
+    "semantic_hash": "186bd72b5e6fe705a5fa4dcf28596c17"
+  },
+  "tests/test_adapters_and_golden_queries.py": {
+    "mtime": 1794629231.913268,
+    "seen": 1794631490.211614,
+    "ast_hash": "35d2698b371d599fa6af1baf4a3a21e0",
+    "semantic_hash": "35d2698b371d599fa6af1baf4a3a21e0"
+  },
+  "tests/test_demo.py": {
+    "mtime": 1794629103.5070071,
+    "seen": 1794631490.211614,
+    "ast_hash": "51e73e401eb80276f3244b58151ddea7",
+    "semantic_hash": "51e73e401eb80276f3244b58151ddea7"
+  },
+  "tests/test_e2_validation.py": {
+    "mtime": 1794629231.9676676,
+    "seen": 1794631490.211615,
+    "ast_hash": "c6f29bd2bf050122faefa7c95f3966fc",
+    "semantic_hash": "c6f29bd2bf050122faefa7c95f3966fc"
+  },
+  "tests/test_iceberg_puppygraph.py": {
+    "mtime": 1794629231.9126287,
+    "seen": 1794631490.211615,
+    "ast_hash": "97fe5fcfa94d1158a3158684fe2480fb",
+    "semantic_hash": "97fe5fcfa94d1158a3158684fe2480fb"
+  },
+  "tests/test_models_and_guardrails.py": {
+    "mtime": 1794629231.9664147,
+    "seen": 1794631490.211616,
+    "ast_hash": "0fcf50154a322e2c6834ddf623ff6b14",
+    "semantic_hash": "0fcf50154a322e2c6834ddf623ff6b14"
+  },
+  "tests/test_supernode_bucketing.py": {
+    "mtime": 1794629231.9127128,
+    "seen": 1794631490.211617,
+    "ast_hash": "ff222664b552f8d90fed4caff8436d42",
+    "semantic_hash": "ff222664b552f8d90fed4caff8436d42"
+  },
+  "AGENTS.md": {
+    "mtime": 1794626680.864664,
+    "seen": 1794631490.211617,
+    "ast_hash": "168345cb2ea2fdd4666e3ca997093177",
+    "semantic_hash": "168345cb2ea2fdd4666e3ca997093177"
+  },
+  "README.md": {
+    "mtime": 1794505313.8473315,
+    "seen": 1794631490.211618,
+    "ast_hash": "395873b5d5d0f1449a1de19003630541",
+    "semantic_hash": "395873b5d5d0f1449a1de19003630541"
+  },
+  "docs/DESIGN.md": {
+    "mtime": 1794505311.26257,
+    "seen": 1794631490.211618,
+    "ast_hash": "9747c1f26686cb4a4b5ac789060ceb90",
+    "semantic_hash": "9747c1f26686cb4a4b5ac789060ceb90"
+  },
+  "docs/proposal/Scaling the Semantic Knowledge Graph Project Proposal.md": {
+    "mtime": 1794501771.8404772,
+    "seen": 1794631490.2116191,
+    "ast_hash": "55931b24756c501e4aa85fc2bcf0a01d",
+    "semantic_hash": "55931b24756c501e4aa85fc2bcf0a01d"
+  },
+  "docs/superpowers/plans/2026-11-12-scale-kg-plan.md": {
+    "mtime": 1794502918.2358541,
+    "seen": 1794631490.2116191,
+    "ast_hash": "fe432832e69adaac45f6d5a26c583594",
+    "semantic_hash": "fe432832e69adaac45f6d5a26c583594"
+  },
+  "docs/superpowers/specs/2026-11-12-scale-kg-design.md": {
+    "mtime": 1794503885.8335626,
+    "seen": 1794631490.21162,
+    "ast_hash": "691d19d9824eb5744deb47e2a44db836",
+    "semantic_hash": "691d19d9824eb5744deb47e2a44db836"
+  },
+  "tasks/todo.md": {
+    "mtime": 1794626155.7215421,
+    "seen": 1794631490.21162,
+    "ast_hash": "623b5e9fcb75c78c05472a2fe9057f06",
+    "semantic_hash": "623b5e9fcb75c78c05472a2fe9057f06"
+  }
+}
