@@ -146,8 +146,8 @@ async function loadInitialData() {
     if (state.mode === 'live') {
       try {
         const [snapshot, history] = await Promise.all([
-          fetchJson('/showcase/api/snapshot'),
-          fetchJson('/showcase/api/history').catch(() => []),
+          fetchJson(`${apiBase()}/snapshot`),
+          fetchJson(`${apiBase()}/history`).catch(() => []),
         ]);
         state.snapshot = snapshot;
         state.history = Array.isArray(history) ? history : [];
@@ -261,22 +261,23 @@ async function handleRunRamp() {
     return;
   }
 
+  const preset = state.activePreset;
   state.busyAction = 'ramp';
   renderActiveTab();
   showStatus(
-    `Executing coalesced ${state.activePreset.toUpperCase()} benchmark ramp (seed=${seed})…`,
+    `Executing coalesced ${preset.toUpperCase()} benchmark ramp (seed=${seed})…`,
     'info'
   );
   try {
     const res = await postLive('/ramp/run', {
-      preset: state.activePreset,
+      preset,
       adapters: ['in_memory', 'iceberg_puppygraph'],
       seed,
     });
     if (!state.snapshot.benchmarks) {
       state.snapshot.benchmarks = {};
     }
-    state.snapshot.benchmarks[state.activePreset] = res.bundle;
+    state.snapshot.benchmarks[preset] = res.bundle;
     state.lastRampMeta = {
       cache_hit: Boolean(res.cache_hit),
       coalesced: Boolean(res.coalesced),
@@ -287,7 +288,7 @@ async function handleRunRamp() {
         ? 'coalesced onto active single-flight job'
         : 'freshly computed';
     showStatus(
-      `Ramp complete for ${state.activePreset.toUpperCase()} (${modeNote}). Winner: ${res.bundle?.winner_adapter || '—'}.`,
+      `Ramp complete for ${preset.toUpperCase()} (${modeNote}). Winner: ${res.bundle?.winner_adapter || '—'}.`,
       'ok'
     );
   } catch (err) {
@@ -568,6 +569,19 @@ function wireEvents() {
         state.selectedGoldenQuery = event.target.value;
         state.liveAdapterSwitch = null;
         renderActiveTab();
+      } else if (event.target && event.target.id === 'ramp-seed-input') {
+        const parsed = Number.parseInt(event.target.value, 10);
+        state.rampSeed = Number.isFinite(parsed) ? Math.max(1, Math.min(10000, parsed)) : 42;
+        event.target.value = String(state.rampSeed);
+      }
+    });
+
+    dom.appContent.addEventListener('input', (event) => {
+      if (event.target && event.target.id === 'ramp-seed-input') {
+        const parsed = Number.parseInt(event.target.value, 10);
+        if (Number.isFinite(parsed)) {
+          state.rampSeed = Math.max(1, Math.min(10000, parsed));
+        }
       }
     });
   }

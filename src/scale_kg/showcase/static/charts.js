@@ -1,7 +1,7 @@
 // Zero-dependency inline SVG chart generators (strict CSP & XSS safe).
 
 const MONO_FONT = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
-const SANS_FONT = 'ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+const SANS_FONT = "ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
 
 export function escapeHtml(value) {
   if (value === null || value === undefined) {
@@ -116,7 +116,7 @@ export function renderLatencyBarChart(byDepth = {}, budgets = {}) {
           const by = yFor(b.val);
           const bh = Math.max(2, pad.top + plotH - by);
           return `
-            <rect x="${bx.toFixed(1)}" y="${by.toFixed(1)}" width="${barW}" height="${bh.toFixed(1)}" rx="3" fill="${b.fill}" />
+            <rect x="${bx.toFixed(1)}" y="${by.toFixed(1)}" width="${barW}" height="${bh.toFixed(1)}" rx="3" fill="${escapeHtml(b.fill)}" />
             <text x="${(bx + barW / 2).toFixed(1)}" y="${Math.max(pad.top + 10, by - 5).toFixed(1)}" text-anchor="middle" fill="#dbe6f4" font-size="9.5" font-family="${MONO_FONT}">${escapeHtml(fmtAxis(b.val))}</text>
           `;
         })
@@ -257,7 +257,7 @@ export function renderLineChart(
     .map((c) => {
       const fill = c.bucketed ? '#34d399' : color;
       return `
-        <circle cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="4.5" fill="${fill}" stroke="#0a0f17" stroke-width="1.5" />
+        <circle cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="4.5" fill="${escapeHtml(fill)}" stroke="#0a0f17" stroke-width="1.5" />
         <text x="${c.x.toFixed(1)}" y="${Math.max(pad.top + 10, c.y - 9).toFixed(1)}" text-anchor="middle" fill="#eef3f9" font-size="9.5" font-family="${MONO_FONT}">${escapeHtml(fmtAxis(c.yVal))}</text>
         <text x="${c.x.toFixed(1)}" y="${height - 20}" text-anchor="middle" fill="#c7d4e5" font-size="10.5" font-family="${MONO_FONT}">${escapeHtml(c.label)}</text>
       `;
@@ -303,7 +303,7 @@ export function renderWaterfallChart(stageTimingsMs = {}) {
 
   const width = 640;
   const rowH = 34;
-  const pad = { top: 26, right: 86, bottom: 26, left: 162 };
+  const pad = { top: 26, right: 105, bottom: 26, left: 162 };
   const height = pad.top + pad.bottom + rows.length * rowH;
   const plotW = width - pad.left - pad.right;
 
@@ -318,7 +318,7 @@ export function renderWaterfallChart(stageTimingsMs = {}) {
       return `
         <line x1="${pad.left}" y1="${y + rowH - 2}" x2="${width - pad.right}" y2="${y + rowH - 2}" stroke="#1d2c42" stroke-width="1" />
         <text x="${pad.left - 10}" y="${y + 20}" text-anchor="end" fill="#dbe6f4" font-size="11.5" font-weight="600" font-family="${SANS_FONT}">${escapeHtml(r.label)}</text>
-        <rect x="${startX.toFixed(1)}" y="${y + 7}" width="${segW.toFixed(1)}" height="18" rx="4" fill="${r.color}" />
+        <rect x="${startX.toFixed(1)}" y="${y + 7}" width="${segW.toFixed(1)}" height="18" rx="4" fill="${escapeHtml(r.color)}" />
         <text x="${width - pad.right + 8}" y="${y + 20}" text-anchor="start" fill="#c7d4e5" font-size="10.5" font-family="${MONO_FONT}">${escapeHtml(r.ms.toFixed(2))}ms (${escapeHtml(pct)}%)</text>
       `;
     })

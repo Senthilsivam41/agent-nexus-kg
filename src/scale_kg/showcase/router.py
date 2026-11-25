@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Annotated, TypeVar
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Response
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
 from scale_kg.api.state import verify_api_key_token
 from scale_kg.showcase.concurrency import BackpressureError, ShowcaseService
@@ -100,6 +100,9 @@ def create_showcase_router(
     )
 
     @router.get("", include_in_schema=False)
+    async def showcase_redirect() -> RedirectResponse:
+        return RedirectResponse(url="/showcase/", status_code=307)
+
     @router.get("/", include_in_schema=False)
     async def showcase_index() -> FileResponse:
         static_root = STATIC_DIR.resolve()

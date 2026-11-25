@@ -827,7 +827,7 @@ async def test_fastapi_showcase_endpoints_static_and_ramp_backpressure_429(
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            assert (await client.get("/showcase")).status_code == 404
+            assert (await client.get("/showcase/")).status_code == 404
             assert (await client.get("/showcase/assets/app.js")).status_code == 404
 
             (static_dir / "index.html").write_text(
@@ -836,13 +836,14 @@ async def test_fastapi_showcase_endpoints_static_and_ramp_backpressure_429(
             (static_dir / "app.js").write_text("console.log('ok');", encoding="utf-8")
             (static_dir / "secret.txt").write_text("top-secret", encoding="utf-8")
 
-            idx_resp = await client.get("/showcase")
-            assert idx_resp.status_code == 200
-            assert "text/html" in idx_resp.headers["content-type"]
-            assert idx_resp.headers["cache-control"] == "public, max-age=300"
+            redir_resp = await client.get("/showcase")
+            assert redir_resp.status_code == 307
+            assert redir_resp.headers["location"] == "/showcase/"
 
             slash_resp = await client.get("/showcase/")
             assert slash_resp.status_code == 200
+            assert "text/html" in slash_resp.headers["content-type"]
+            assert slash_resp.headers["cache-control"] == "public, max-age=300"
 
             js_resp = await client.get("/showcase/assets/app.js")
             assert js_resp.status_code == 200

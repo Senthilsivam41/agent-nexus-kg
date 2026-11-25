@@ -620,6 +620,7 @@ export function renderLoadEscalator(snapshot, state) {
                 class="seg-btn ${activePreset === p ? 'is-active' : ''}"
                 data-action="select-preset"
                 data-preset="${escapeHtml(p)}"
+                ${state.busyAction === 'ramp' ? 'disabled' : ''}
               >${escapeHtml(p.toUpperCase())}</button>
             `
               )
@@ -781,8 +782,9 @@ function computeScaleScorecard(baseCard, adapterResult, scaleLabel, budgets) {
       projected2Hop: null,
       projected3Hop: null,
       projectedCost: null,
+      perfAtScale: baseCard.performance_score,
+      costAtScale: baseCard.cost_score,
       scaleScore: baseCard.weighted_total,
-      withinBudgetAtScale: baseCard.meets_latency_gate,
     };
   }
   const ladder = adapterResult.cost_extrapolation?.scale_ladder || [];
@@ -793,8 +795,9 @@ function computeScaleScorecard(baseCard, adapterResult, scaleLabel, budgets) {
       projected2Hop: null,
       projected3Hop: null,
       projectedCost: null,
+      perfAtScale: baseCard.performance_score,
+      costAtScale: baseCard.cost_score,
       scaleScore: baseCard.weighted_total,
-      withinBudgetAtScale: baseCard.meets_latency_gate,
     };
   }
 
@@ -838,8 +841,8 @@ function computeScaleScorecard(baseCard, adapterResult, scaleLabel, budgets) {
     projected3Hop: d3,
     projectedCost: monthlyUsd,
     perfAtScale: Number(perfAtScale.toFixed(1)),
+    costAtScale: Number(costScore.toFixed(1)),
     scaleScore: scaleTotal,
-    withinBudgetAtScale: Boolean(step.within_2hop_budget) && d3 <= b3,
   };
 }
 
@@ -1033,7 +1036,7 @@ export function renderAdapterSwitchboard(snapshot, state) {
           <td class="num align-right">${card.projectedCost !== null ? escapeHtml(fmtUsd(card.projectedCost)) : '—'}</td>
           <td class="num align-right">${escapeHtml(card.perfAtScale ?? card.performance_score)}</td>
           <td class="num align-right">${escapeHtml(card.scalability_resilience_score)}</td>
-          <td class="num align-right">${escapeHtml(card.cost_score)}</td>
+          <td class="num align-right">${escapeHtml(card.costAtScale ?? card.cost_score)}</td>
           <td class="num align-right">${escapeHtml(card.operability_score)}</td>
           <td class="num align-right"><strong>${escapeHtml(card.scaleScore.toFixed(2))}</strong></td>
           <td>${
