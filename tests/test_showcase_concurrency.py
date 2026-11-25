@@ -6,6 +6,7 @@ import asyncio
 import json
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -130,37 +131,164 @@ async def test_single_flight_follower_cancel_preserves_leader_and_cleans_state()
 
 
 @pytest.mark.asyncio
-async def test_single_flight_leader_cancel_cleans_inflight_and_pending() -> None:
+async def test_single_flight_leader_cancel_preserves_coalesced_follower() -> None:
+    started = threading.Event()
+    release = threading.Event()
+    calls = 0
+
+    def blocked_job() -> str:
+        nonlocal calls
+        calls += 1
+        started.set()
+        release.wait(timeout=2.0)
+        return "done"
+
+    runner = SingleFlightJobRunner(max_concurrent=1, max_pending=2)
+    leader = asyncio.create_task(runner.run("shared-cancel", blocked_job))
+    await asyncio.to_thread(started.wait, 2.0)
+
+    follower = asyncio.create_task(runner.run("shared-cancel", blocked_job))
+    await asyncio.sleep(0.01)
+
+    leader.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await leader
+
+    # Coalesced follower must still succeed and fn must execute exactly once.
+    release.set()
+    follower_res = await follower
+    assert follower_res == ("done", False, True)
+    assert calls == 1
+    assert runner._pending_count == 0
+    assert not runner._inflight
+
+
+@pytest.mark.asyncio
+async def test_single_flight_cancel_while_running_holds_capacity_until_worker_exits() -> (
+    None
+):
     started = threading.Event()
     release = threading.Event()
 
     def blocked_job() -> str:
         started.set()
         release.wait(timeout=2.0)
-        return "done"
+        return "finished"
 
     runner = SingleFlightJobRunner(max_concurrent=1, max_pending=1)
-    leader = asyncio.create_task(runner.run("cancel-key", blocked_job))
+    leader = asyncio.create_task(runner.run("active-key", blocked_job))
     await asyncio.to_thread(started.wait, 2.0)
 
-    follower = asyncio.create_task(runner.run("cancel-key", blocked_job))
-    await asyncio.sleep(0.01)
+    inflight_entry = runner._inflight["active-key"]
+    assert inflight_entry.started is True
 
     leader.cancel()
     with pytest.raises(asyncio.CancelledError):
         await leader
-    with pytest.raises(asyncio.CancelledError):
-        await follower
 
-    assert "cancel-key" not in runner._inflight
-    assert runner._pending_count == 0
+    # Worker thread is still active: pending slot and semaphore remain held.
+    assert "active-key" in runner._inflight
+    assert runner._pending_count == 1
+    with pytest.raises(BackpressureError):
+        await runner.run("other-key", lambda: "rejected")
+
+    # Once worker thread finishes, detached task cleans up inflight + pending cleanly.
     release.set()
+    assert await asyncio.wait_for(asyncio.shield(inflight_entry.task), timeout=2.0) == (
+        "finished"
+    )
+    assert runner._pending_count == 0
+    assert not runner._inflight
 
-    # Subsequent execution with the same key must succeed without backpressure.
-    val, hit, coalesced = await runner.run("cancel-key", lambda: "recovered")
+    # Capacity is now restored and a new key succeeds cleanly.
+    val, hit, coalesced = await runner.run("other-key", lambda: "recovered")
     assert (val, hit, coalesced) == ("recovered", False, False)
     assert runner._pending_count == 0
     assert not runner._inflight
+
+
+@pytest.mark.asyncio
+async def test_single_flight_cancel_while_queued_skips_worker_execution() -> None:
+    started = threading.Event()
+    release = threading.Event()
+    queued_calls = 0
+
+    def blocker_job() -> str:
+        started.set()
+        release.wait(timeout=2.0)
+        return "blocker"
+
+    def queued_job() -> str:
+        nonlocal queued_calls
+        queued_calls += 1
+        return "should-not-run"
+
+    runner = SingleFlightJobRunner(max_concurrent=1, max_pending=2)
+    blocker = asyncio.create_task(runner.run("blocker", blocker_job))
+    await asyncio.to_thread(started.wait, 2.0)
+
+    queued = asyncio.create_task(runner.run("queued", queued_job))
+    await asyncio.sleep(0.01)
+    assert "queued" in runner._inflight
+    assert runner._inflight["queued"].started is False
+
+    queued.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await queued
+    await asyncio.sleep(0.01)
+
+    release.set()
+    assert await blocker == ("blocker", False, False)
+    assert queued_calls == 0
+    assert runner._pending_count == 0
+    assert not runner._inflight
+
+
+@pytest.mark.asyncio
+async def test_single_flight_lru_eviction_and_zero_ttl_bypass() -> None:
+    calls: dict[str, int] = {}
+
+    def make_job(key: str) -> Callable[[], str]:
+        def _fn() -> str:
+            calls[key] = calls.get(key, 0) + 1
+            return f"{key}-{calls[key]}"
+
+        return _fn
+
+    runner = SingleFlightJobRunner(
+        max_concurrent=2,
+        max_pending=4,
+        cache_ttl_seconds=60.0,
+        max_cache_entries=2,
+    )
+    v1, hit1, _ = await runner.run("k1", make_job("k1"))
+    v2, hit2, _ = await runner.run("k2", make_job("k2"))
+    assert (v1, hit1, v2, hit2) == ("k1-1", False, "k2-1", False)
+
+    # Touch k1 so k2 becomes the least-recently-used entry.
+    v1_hit, hit1_again, _ = await runner.run("k1", make_job("k1"))
+    assert (v1_hit, hit1_again) == ("k1-1", True)
+
+    # Inserting k3 must evict k2 while keeping k1 cached.
+    v3, hit3, _ = await runner.run("k3", make_job("k3"))
+    assert (v3, hit3) == ("k3-1", False)
+
+    v1_still, hit1_still, _ = await runner.run("k1", make_job("k1"))
+    assert (v1_still, hit1_still) == ("k1-1", True)
+
+    v2_recomputed, hit2_recomputed, _ = await runner.run("k2", make_job("k2"))
+    assert (v2_recomputed, hit2_recomputed) == ("k2-2", False)
+
+    # cache_ttl_seconds=0 disables caching completely.
+    no_cache_runner = SingleFlightJobRunner(
+        max_concurrent=2,
+        max_pending=4,
+        cache_ttl_seconds=0.0,
+    )
+    first, hit_a, _ = await no_cache_runner.run("nocache", make_job("nc"))
+    second, hit_b, _ = await no_cache_runner.run("nocache", make_job("nc"))
+    assert (first, hit_a) == ("nc-1", False)
+    assert (second, hit_b) == ("nc-2", False)
 
 
 @pytest.mark.asyncio
@@ -369,3 +497,181 @@ async def test_showcase_service_loads_snapshot_from_path_with_stable_etag(
         assert etag1 == etag2 == etag_built
     finally:
         file_service.close()
+
+
+@pytest.mark.asyncio
+async def test_showcase_service_light_validation_and_timeout_enforcement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ValueError, match="light_concurrency"):
+        ShowcaseService(light_concurrency=0)
+    with pytest.raises(ValueError, match="light_timeout_seconds"):
+        ShowcaseService(light_timeout_seconds=0.0)
+    with pytest.raises(ValueError, match="light_timeout_seconds"):
+        ShowcaseService(light_timeout_seconds=-1.0)
+
+    async def slow_guardrail(probe_id: str) -> object:
+        await asyncio.sleep(0.2)
+        return probe_id
+
+    monkeypatch.setattr(
+        "scale_kg.showcase.concurrency.run_guardrail_probe",
+        slow_guardrail,
+    )
+
+    service = ShowcaseService(light_timeout_seconds=0.02)
+    try:
+        with pytest.raises(TimeoutError):
+            await service.simulate_guardrail(
+                GuardrailProbeRequest(probe_id="forbidden_payload")
+            )
+    finally:
+        service.close()
+
+
+@pytest.mark.asyncio
+async def test_showcase_service_run_ramp_normalizes_adapters_and_propagates_backpressure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = await run_preset_benchmark(ScalePreset.MICRO, adapters=("in_memory",))
+    calls = 0
+
+    def fake_run_sync(req: RampRunRequest) -> object:
+        nonlocal calls
+        calls += 1
+        return bundle
+
+    monkeypatch.setattr(
+        "scale_kg.showcase.concurrency._run_benchmark_sync", fake_run_sync
+    )
+
+    service = ShowcaseService(
+        job_runner=SingleFlightJobRunner(max_concurrent=1, max_pending=1)
+    )
+    try:
+        first = await service.run_ramp(
+            RampRunRequest(
+                preset="micro",
+                adapters=["in_memory", "iceberg_puppygraph"],
+                seed=42,
+            )
+        )
+        assert first.cache_hit is False
+        assert first.coalesced is False
+        assert calls == 1
+
+        # Reversed adapter order must normalize to the same cache key.
+        second = await service.run_ramp(
+            RampRunRequest(
+                preset="micro",
+                adapters=["iceberg_puppygraph", "in_memory"],
+                seed=42,
+            )
+        )
+        assert second.cache_hit is True
+        assert second.coalesced is False
+        assert calls == 1
+    finally:
+        service.close()
+
+    # BackpressureError from SingleFlightJobRunner must propagate cleanly.
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocked_run_sync(req: RampRunRequest) -> object:
+        started.set()
+        release.wait(timeout=2.0)
+        return bundle
+
+    monkeypatch.setattr(
+        "scale_kg.showcase.concurrency._run_benchmark_sync", blocked_run_sync
+    )
+
+    bp_service = ShowcaseService(
+        job_runner=SingleFlightJobRunner(
+            max_concurrent=1, max_pending=1, retry_after_seconds=7
+        )
+    )
+    try:
+        holder = asyncio.create_task(
+            bp_service.run_ramp(
+                RampRunRequest(preset="micro", adapters=["in_memory"], seed=1)
+            )
+        )
+        await asyncio.to_thread(started.wait, 2.0)
+
+        with pytest.raises(BackpressureError) as exc_info:
+            await bp_service.run_ramp(
+                RampRunRequest(preset="micro", adapters=["in_memory"], seed=2)
+            )
+        assert exc_info.value.retry_after_seconds == 7
+
+        release.set()
+        await holder
+    finally:
+        bp_service.close()
+
+
+@pytest.mark.asyncio
+async def test_showcase_service_get_history_handles_missing_and_deleted_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    missing_file = tmp_path / "does_not_exist.json"
+    service = ShowcaseService(history_path=missing_file)
+    try:
+        assert await service.get_history() == []
+
+        # Simulate file disappearing between stat() and read_text().
+        vanishing_file = tmp_path / "vanishing.json"
+        vanishing_file.write_text("[]", encoding="utf-8")
+        service._history_path = vanishing_file
+
+        original_read_text = Path.read_text
+
+        def vanished_read_text(
+            self: Path,
+            encoding: str | None = None,
+            errors: str | None = None,
+            newline: str | None = None,
+        ) -> str:
+            if self == vanishing_file:
+                raise FileNotFoundError(self.name)
+            return original_read_text(
+                self, encoding=encoding, errors=errors, newline=newline
+            )
+
+        monkeypatch.setattr(Path, "read_text", vanished_read_text)
+        assert await service.get_history() == []
+        assert service._history_stamp is None
+        assert service._history_cache == []
+    finally:
+        service.close()
+
+
+@pytest.mark.asyncio
+async def test_showcase_service_adapter_switch_deduplicates_preserving_order() -> None:
+    service = ShowcaseService()
+    try:
+        dedup_resp = await service.simulate_adapter_switch(
+            AdapterSwitchRequest(
+                query_id="GQ-03",
+                adapters=["in_memory", "in_memory"],
+            )
+        )
+        assert [item.adapter for item in dedup_resp.results] == ["in_memory"]
+        assert dedup_resp.parity_matched is True
+
+        ordered_resp = await service.simulate_adapter_switch(
+            AdapterSwitchRequest(
+                query_id="GQ-03",
+                adapters=["iceberg_puppygraph", "in_memory"],
+            )
+        )
+        assert [item.adapter for item in ordered_resp.results] == [
+            "iceberg_puppygraph",
+            "in_memory",
+        ]
+        assert ordered_resp.parity_matched is True
+    finally:
+        service.close()
