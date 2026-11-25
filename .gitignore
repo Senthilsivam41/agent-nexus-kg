@@ -24,3 +24,4 @@ coverage/
 .autoclaw/
 .codegraph/
 .docker-data/
+.netlify/

@@ -1,4 +1,4 @@
-.PHONY: setup demo dev check docker-build docker-up docker-down
+.PHONY: setup demo dev showcase-build showcase check docker-build docker-up docker-down
 
 setup:
 	uv sync --locked
@@ -8,6 +8,12 @@ demo:
 
 dev:
 	uv run python -m scale_kg.api.app --host 127.0.0.1 --port 8000
+
+showcase-build:
+	uv run python -m scale_kg.showcase.build --presets micro,local --out dist/showcase
+
+showcase: showcase-build
+	SCALE_KG_SHOWCASE_SNAPSHOT=dist/showcase/snapshot.json uv run python -m scale_kg.api.app --host 127.0.0.1 --port 8000
 
 docker-build:
 	docker compose --profile neo4j --profile hugegraph --profile puppygraph build

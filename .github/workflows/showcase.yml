@@ -1,0 +1,95 @@
+name: Showcase Dashboard
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/scale_kg/**"
+      - "pyproject.toml"
+      - "Makefile"
+      - "netlify.toml"
+      - ".github/workflows/showcase.yml"
+  pull_request:
+    paths:
+      - "src/scale_kg/**"
+      - "pyproject.toml"
+      - "Makefile"
+      - "netlify.toml"
+      - ".github/workflows/showcase.yml"
+  workflow_dispatch:
+    inputs:
+      include_cluster:
+        description: "Include cluster preset (5k nodes / 10B ref)"
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CI: "true"
+      SHOWCASE_PUBLIC_URL: "https://scale-kg.labbys-aoai.in"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.11"
+      - run: make setup
+      - name: Fetch previous live history.json (best-effort)
+        run: |
+          curl -fsSL --max-time 10 "${SHOWCASE_PUBLIC_URL}/history.json" -o /tmp/prev-history.json || echo "[]" > /tmp/prev-history.json
+      - name: Build static showcase bundle
+        run: |
+          PRESETS="micro,local"
+          if [ "${{ github.event.inputs.include_cluster }}" = "true" ]; then
+            PRESETS="micro,local,cluster"
+          fi
+          uv run python -m scale_kg.showcase.build \
+            --presets "${PRESETS}" \
+            --out dist/showcase \
+            --history-in /tmp/prev-history.json \
+            --git-sha "${GITHUB_SHA}" \
+            --git-ref "${GITHUB_REF_NAME}" \
+            --summary-out /tmp/showcase-summary.md
+      - name: Upload showcase artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: scale-kg-showcase
+          path: dist/showcase
+          retention-days: 14
+      - name: Deploy Netlify PR preview
+        if: github.event_name == 'pull_request'
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+        run: |
+          if [ -z "${NETLIFY_AUTH_TOKEN}" ] || [ -z "${NETLIFY_SITE_ID}" ]; then
+            echo "NETLIFY_AUTH_TOKEN / NETLIFY_SITE_ID secrets not set; skipping PR preview deploy."
+            exit 0
+          fi
+          npx --yes netlify-cli deploy \
+            --dir=dist/showcase \
+            --alias="pr-${{ github.event.pull_request.number }}" \
+            --message="PR #${{ github.event.pull_request.number }} (${GITHUB_SHA::12})"
+      - name: Deploy Netlify production
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+        run: |
+          if [ -z "${NETLIFY_AUTH_TOKEN}" ] || [ -z "${NETLIFY_SITE_ID}" ]; then
+            echo "NETLIFY_AUTH_TOKEN / NETLIFY_SITE_ID secrets not set; skipping deploy."
+            exit 0
+          fi
+          npx --yes netlify-cli deploy \
+            --dir=dist/showcase \
+            --prod \
+            --message="Commit ${GITHUB_SHA::12}"
+      - name: Publish benchmark delta summary
+        run: cat /tmp/showcase-summary.md >> "$GITHUB_STEP_SUMMARY"

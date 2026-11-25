@@ -22,6 +22,7 @@ Following repository guidelines, capabilities are separated by verified implemen
 * **Reference & Zero-ETL Parquet Adapters:** `InMemoryGraphStore` (partitioned reference baseline with `FaultState` injection) and `IcebergPuppyGraphStore` local PyArrow mode (`domain=<d>/bucket_16=<b>` Parquet partitions, Iceberg v2 metadata, `puppygraph_schema.json`, partition-pruned scans).
 * **Gate 2 Benchmark Harness (`scale_kg.benchmark`):** `PowerLawGraphGenerator` (`micro`, `local`, `cluster` presets), frozen `GoldenQuerySuite` (`GQ-01`..`GQ-07` cross-adapter parity), 7 PoC workloads (`BenchmarkSuite`), and automated weighted ADR generation (`generate_gate2_adr`).
 * **FastAPI REST & gRPC Service (`scale_kg.api`):** FastAPI `/v1/*` REST API (`create_app()`), typed `ScaleKGGrpcServicer` & `scale_kg.proto` contract (`scale_kg.v1.ScaleKGService`), HTTP JSON-gRPC bridge, structured `GuardrailViolation` `422` errors, optional API-key auth, and `python -m scale_kg.api.app` CLI.
+* **Interactive Showcase Dashboard (`scale_kg.showcase`):** Zero-build 5-tab dashboard served at `/showcase` (with `/showcase/api/snapshot` and live simulation endpoints) plus static bundle export (`python -m scale_kg.showcase.build`) with snapshot/history generation and PR delta summaries.
 
 ### Implemented & Verified Against Mock Transports / Drivers (Live Cluster Integration Pending)
 * **`HugeGraphStore`:** Async `httpx` REST/Gremlin/OpenCypher client with PD partition headers and deterministic placement hints.
@@ -59,9 +60,12 @@ flowchart TD
 
 ```text
 scale-kg/
-├── Makefile                    # setup, demo, and check targets
+├── Makefile                    # setup, demo, dev, showcase, showcase-build, and check targets
+├── netlify.toml                # Netlify publish dir, CSP/security headers, and cache rules
+├── CHANGELOG.md                # Release and unreleased change notes
 ├── portfolio.yaml              # Portfolio product manifest
 ├── pyproject.toml              # Package metadata, dependencies, ruff & mypy config
+├── .github/workflows/          # CI checks and automated Netlify showcase deployment
 ├── docs/
 │   ├── architecture.md         # 4-layer architecture, adapters, SLAs, status matrix
 │   ├── low-level-design.md     # Class, sequence, state, ER, and flow diagrams
@@ -76,7 +80,8 @@ scale-kg/
 │   ├── routing/                # EntityDirectory, QueryCoordinator, HybridGraphRAGRouter
 │   ├── adapters/               # GraphStore ABC, 0-1 BFS, InMemory, Iceberg, HugeGraph, Neo4j, stubs
 │   ├── lakehouse/              # Parquet-backed LakehouseContentStore
-│   └── benchmark/              # PowerLawGraphGenerator, GoldenQuerySuite, 7 workloads, Gate 2 ADR
+│   ├── benchmark/              # PowerLawGraphGenerator, GoldenQuerySuite, 7 workloads, Gate 2 ADR
+│   └── showcase/               # Interactive dashboard router, snapshot builder, static UI assets
 └── tests/                      # Unit, adapter contract, E2–E4 validation, and benchmark suites
 ```
 
@@ -95,7 +100,21 @@ make demo
 
 # 3. Run formatter, linter, typechecker, pytest suite, and wheel/sdist build
 make check
+
+# 4. Build static showcase bundle and launch local interactive dashboard at /showcase
+make showcase
 ```
+
+---
+
+## Interactive Showcase Dashboard & Netlify Deployment
+
+* **Local Live Server (`make showcase`):** Runs `make showcase-build` (`python -m scale_kg.showcase.build --presets micro,local --out dist/showcase`) and starts `scale_kg.api.app` on `127.0.0.1:8000` with `SCALE_KG_SHOWCASE_SNAPSHOT=dist/showcase/snapshot.json`. Visit `http://127.0.0.1:8000/showcase` for the interactive dashboard and `/showcase/api/snapshot` for the JSON snapshot payload.
+* **Static Bundle (`make showcase-build`):** Generates `dist/showcase/{index.html,snapshot.json,history.json,assets/*}` ready for static hosting via [netlify.toml](netlify.toml) (strict CSP/security headers and `Cache-Control` rules for `/snapshot.json`, `/history.json`, and `/assets/*`).
+* **Automated CI/CD (`.github/workflows/showcase.yml`):**
+  * Custom domain: `https://scale-kg.labbys-aoai.in` (configured via a Hostinger DNS `CNAME` record pointing to the Netlify site).
+  * Pull requests deploy a Netlify preview (`pr-<number>`) and post a benchmark delta summary to `$GITHUB_STEP_SUMMARY`; pushes to `main` (and `workflow_dispatch`) deploy to production.
+  * Repository secrets required in GitHub Actions: `NETLIFY_AUTH_TOKEN` and `NETLIFY_SITE_ID` (deploys are skipped cleanly when unset).
 
 ### Minimal Python SDK Example
 
