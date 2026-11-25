@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import tempfile
 import time
 from collections.abc import Callable, Sequence
+from contextlib import AbstractContextManager
 from pathlib import Path
 
 from scale_kg.adapters import IcebergPuppyGraphStore, InMemoryGraphStore
@@ -248,7 +250,8 @@ async def run_federation_demo(
     """Demonstrate Hop-0 O(1) prefix parsing and Ghost/Proxy cross-shard federation."""
     sample_id = "customer:org:acme"
     parsed = parse_canonical_id(sample_id)
-    assert parsed is not None
+    if parsed is None:
+        raise RuntimeError(f"Failed to parse canonical ID: {sample_id!r}")
 
     points: list[FederationSharePoint] = []
     for share in shares:
@@ -317,7 +320,7 @@ async def run_guardrail_probe(probe_id: GuardrailProbeId) -> GuardrailProbeResul
                 violation=exc.violation,
                 summary="Rejected heavy 'content' key in routing_props before storage write.",
             )
-        raise AssertionError("Expected GuardrailViolationError for forbidden_payload.")
+        raise RuntimeError("Expected GuardrailViolationError for forbidden_payload.")
 
     if probe_id == "missing_lakehouse_ref":
         enforcer = GuardrailEnforcer()
@@ -339,7 +342,7 @@ async def run_guardrail_probe(probe_id: GuardrailProbeId) -> GuardrailProbeResul
                 violation=exc.violation,
                 summary="Content-bearing Document rejected without lakehouse_ref URI.",
             )
-        raise AssertionError(
+        raise RuntimeError(
             "Expected GuardrailViolationError for missing_lakehouse_ref."
         )
 
@@ -363,9 +366,7 @@ async def run_guardrail_probe(probe_id: GuardrailProbeId) -> GuardrailProbeResul
                 violation=exc.violation,
                 summary="Blocked depth=4 traversal pre-flight (hard cap max_depth <= 3).",
             )
-        raise AssertionError(
-            "Expected GuardrailViolationError for preflight_depth_cap."
-        )
+        raise RuntimeError("Expected GuardrailViolationError for preflight_depth_cap.")
 
     if probe_id != "runtime_expansion_abort":
         raise ValueError(f"Unsupported guardrail probe_id: {probe_id!r}")
@@ -429,8 +430,13 @@ async def run_hybrid_rag_demo(
     warehouse_dir: Path | None = None,
 ) -> HybridRagDemoResult:
     """Run the 5-stage Seed-Then-Expand Hybrid GraphRAG pipeline with Parquet Lakehouse."""
-    with tempfile.TemporaryDirectory(prefix="scale_kg_showcase_lh_") as tmp:
-        lh_dir = warehouse_dir or Path(tmp)
+    lh_cm: AbstractContextManager[str | Path] = (
+        contextlib.nullcontext(warehouse_dir)
+        if warehouse_dir is not None
+        else tempfile.TemporaryDirectory(prefix="scale_kg_showcase_lh_")
+    )
+    with lh_cm as tmp:
+        lh_dir = Path(tmp)
         store = InMemoryGraphStore()
         coordinator = QueryCoordinator(store)
         lakehouse = LakehouseContentStore(lh_dir)
@@ -557,6 +563,8 @@ def _make_adapter_factories(
     adapters: Sequence[BackendType],
     temp_root: Path,
 ) -> dict[str, Callable[[], GraphStore]]:
+    if not adapters:
+        raise ValueError("adapters must not be empty.")
     factories: dict[str, Callable[[], GraphStore]] = {}
     counter = 0
 
@@ -573,6 +581,11 @@ def _make_adapter_factories(
                 return IcebergPuppyGraphStore(warehouse_path=wh)
 
             factories[name] = _iceberg_factory
+        else:
+            raise ValueError(
+                f"Unsupported adapter: {name!r}. "
+                "Expected 'in_memory' or 'iceberg_puppygraph'."
+            )
     return factories
 
 
@@ -584,8 +597,13 @@ async def run_preset_benchmark(
     temp_root: Path | None = None,
 ) -> PresetBenchmarkBundle:
     """Run the 7-workload BenchmarkSuite and Gate 2 ADR scorer for one preset."""
-    with tempfile.TemporaryDirectory(prefix=f"scale_kg_bench_{preset.value}_") as tmp:
-        root = temp_root or Path(tmp)
+    root_cm: AbstractContextManager[str | Path] = (
+        contextlib.nullcontext(temp_root)
+        if temp_root is not None
+        else tempfile.TemporaryDirectory(prefix=f"scale_kg_bench_{preset.value}_")
+    )
+    with root_cm as tmp:
+        root = Path(tmp)
         factories = _make_adapter_factories(adapters, root)
         suite = BenchmarkSuite(preset=preset, seed=seed)
         suite_result = await suite.run(factories, run_golden_parity=len(factories) >= 2)

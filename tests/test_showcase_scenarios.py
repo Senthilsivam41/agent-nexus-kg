@@ -119,3 +119,21 @@ async def test_run_preset_benchmark_returns_scorecards_and_adr() -> None:
     assert len(bundle.scorecards) == 2
     assert bundle.winner_adapter in {"in_memory", "iceberg_puppygraph"}
     assert "ADR-" in bundle.adr_markdown
+
+
+@pytest.mark.asyncio
+async def test_run_preset_benchmark_rejects_empty_adapters() -> None:
+    with pytest.raises(ValueError, match="adapters must not be empty"):
+        await run_preset_benchmark(ScalePreset.MICRO, adapters=())
+
+
+@pytest.mark.asyncio
+async def test_run_preset_benchmark_rejects_unsupported_adapter() -> None:
+    with pytest.raises(ValueError, match="Unsupported adapter"):
+        await run_preset_benchmark(ScalePreset.MICRO, adapters=("neo4j",))
+
+
+@pytest.mark.asyncio
+async def test_run_guardrail_probe_rejects_invalid_probe_id() -> None:
+    with pytest.raises(ValueError, match="Unsupported guardrail probe_id"):
+        await run_guardrail_probe("nonexistent_probe")  # type: ignore[arg-type]
