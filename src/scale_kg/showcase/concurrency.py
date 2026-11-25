@@ -14,6 +14,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Final, TypeVar, cast
 
+from pydantic import ValidationError
+
 from scale_kg.adapters import IcebergPuppyGraphStore, InMemoryGraphStore
 from scale_kg.adapters.base import GraphStore
 from scale_kg.benchmark.generator import ScalePreset
@@ -65,10 +67,15 @@ class BackpressureError(Exception):
 class _InFlightJob:
     """Detached background single-flight task with active waiter tracking."""
 
-    __slots__ = ("released", "started", "task", "waiters")
+    __slots__ = ("release", "released", "started", "task", "waiters")
 
-    def __init__(self, task: asyncio.Task[object]) -> None:
+    def __init__(
+        self,
+        task: asyncio.Task[object],
+        release: Callable[[], None],
+    ) -> None:
         self.task = task
+        self.release = release
         self.waiters = 0
         self.started = False
         self.released = False
@@ -177,7 +184,7 @@ class SingleFlightJobRunner:
                 _release()
 
             task: asyncio.Task[object] = asyncio.create_task(_worker())
-            job = _InFlightJob(task)
+            job = _InFlightJob(task, _release)
             job_ref.append(job)
             task.add_done_callback(_on_done)
             self._inflight[key] = job
@@ -190,9 +197,16 @@ class SingleFlightJobRunner:
         finally:
             job.waiters -= 1
             if job.waiters == 0 and not job.started and not job.task.done():
-                if self._inflight.get(key) is job:
-                    self._inflight.pop(key, None)
+                job.release()
                 job.task.cancel()
+
+    def close(self) -> None:
+        """Cancel any unstarted queued jobs and clear cached results."""
+        for job in list(self._inflight.values()):
+            if not job.started and not job.task.done():
+                job.release()
+                job.task.cancel()
+        self._cache.clear()
 
 
 def _run_benchmark_sync(req: RampRunRequest) -> PresetBenchmarkBundle:
@@ -260,7 +274,7 @@ def _read_history_sync(
     """Stat and conditionally load rolling history.json off the event loop."""
     try:
         st = history_path.stat()
-    except FileNotFoundError:
+    except OSError:
         return False, None, None
     if not stat_mod.S_ISREG(st.st_mode):
         return False, None, None
@@ -269,10 +283,19 @@ def _read_history_sync(
         return True, stamp, None
     try:
         raw_text = history_path.read_text(encoding="utf-8")
+        data = json.loads(raw_text)
     except FileNotFoundError:
         return False, None, None
-    data = json.loads(raw_text)
-    entries = [CommitTrendEntry.model_validate(item) for item in data]
+    except (OSError, ValueError):
+        return True, stamp, []
+    if not isinstance(data, list):
+        return True, stamp, []
+    entries: list[CommitTrendEntry] = []
+    for item in data:
+        try:
+            entries.append(CommitTrendEntry.model_validate(item))
+        except ValidationError:
+            continue
     return True, stamp, entries
 
 
@@ -316,9 +339,12 @@ class ShowcaseService:
         self._golden_stores: dict[str, GraphStore] = {}
         self._history_cache: list[CommitTrendEntry] = []
         self._history_stamp: tuple[int, int] | None = None
+        self._closed = False
 
     def close(self) -> None:
         """Release temporary playground resources and clear cached references cleanly."""
+        self._closed = True
+        self._job_runner.close()
         if self._playground_dir is not None:
             self._playground_dir.cleanup()
             self._playground_dir = None
@@ -329,21 +355,41 @@ class ShowcaseService:
         self._history_cache.clear()
         self._history_stamp = None
 
+    async def aclose(self) -> None:
+        """Async shutdown: cancel queued jobs, await in-flight Iceberg tasks, then release resources."""
+        self._closed = True
+        self._job_runner.close()
+        inflight_tasks = [
+            task for task in list(self._iceberg_inflight.values()) if not task.done()
+        ]
+        if inflight_tasks:
+            await asyncio.gather(*inflight_tasks, return_exceptions=True)
+        self.close()
+
     async def _ensure_initialized(self) -> None:
+        if self._closed:
+            raise RuntimeError("ShowcaseService is closed.")
         if self._snapshot_bytes is not None and self._golden_stores:
             return
         async with self._init_lock:
+            if self._closed:
+                raise RuntimeError("ShowcaseService is closed.")
             if self._snapshot_bytes is None:
                 encoded, etag = await asyncio.to_thread(
                     _load_or_build_snapshot_sync,
                     self._snapshot_path,
                     self._config,
                 )
+                if self._closed:
+                    raise RuntimeError("ShowcaseService is closed.")
                 self._snapshot_bytes = encoded
                 self._snapshot_etag = etag
 
             if not self._golden_stores:
                 pg_dir, stores = await asyncio.to_thread(_init_golden_stores_sync)
+                if self._closed:
+                    pg_dir.cleanup()
+                    raise RuntimeError("ShowcaseService is closed.")
                 self._playground_dir = pg_dir
                 self._golden_stores = stores
 

@@ -43,7 +43,11 @@ async def test_build_showcase_site_produces_self_contained_static_bundle(
     assert (out_dir / "snapshot.json").is_file()
     assert (out_dir / "history.json").is_file()
     for asset in ("styles.css", "app.js", "charts.js", "views.js"):
-        assert (out_dir / "assets" / asset).is_file()
+        asset_path = out_dir / "assets" / asset
+        assert asset_path.is_file()
+        asset_text = asset_path.read_text(encoding="utf-8")
+        assert "http://" not in asset_text and "https://" not in asset_text
+        assert str(tmp_path) not in asset_text
 
     html = (out_dir / "index.html").read_text(encoding="utf-8")
     assert 'data-mode="static"' in html

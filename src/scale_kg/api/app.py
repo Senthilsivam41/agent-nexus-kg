@@ -99,7 +99,7 @@ def create_app(
                 hasattr(fastapi_app.state, "showcase")
                 and fastapi_app.state.showcase is not None
             ):
-                fastapi_app.state.showcase.close()
+                await fastapi_app.state.showcase.aclose()
 
     app = FastAPI(
         title="Agent Nexus KG (scale-kg) API",

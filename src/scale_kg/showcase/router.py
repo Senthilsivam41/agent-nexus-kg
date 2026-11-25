@@ -99,9 +99,17 @@ def create_showcase_router(
         dependencies=[Depends(_check_auth)],
     )
 
+    static_cache_control = (
+        "private, no-store" if require_auth else "public, max-age=300"
+    )
+    snapshot_cache_control = (
+        "private, no-store" if require_auth else "public, max-age=30"
+    )
+
     @router.get("", include_in_schema=False)
     async def showcase_redirect() -> RedirectResponse:
-        return RedirectResponse(url="/showcase/", status_code=307)
+        headers = {"Cache-Control": "private, no-store"} if require_auth else None
+        return RedirectResponse(url="/showcase/", status_code=307, headers=headers)
 
     @router.get("/", include_in_schema=False)
     async def showcase_index() -> FileResponse:
@@ -112,7 +120,7 @@ def create_showcase_router(
         return FileResponse(
             index_path,
             media_type="text/html; charset=utf-8",
-            headers={"Cache-Control": "public, max-age=300"},
+            headers={"Cache-Control": static_cache_control},
         )
 
     @router.get("/assets/{filename}", include_in_schema=False)
@@ -127,7 +135,7 @@ def create_showcase_router(
         return FileResponse(
             target,
             media_type=media_type,
-            headers={"Cache-Control": "public, max-age=300"},
+            headers={"Cache-Control": static_cache_control},
         )
 
     @router.get("/api/snapshot")
@@ -137,7 +145,7 @@ def create_showcase_router(
         payload, etag = await service.get_snapshot_bytes()
         headers = {
             "ETag": etag,
-            "Cache-Control": "public, max-age=30",
+            "Cache-Control": snapshot_cache_control,
         }
         if _etag_matches(if_none_match, etag):
             return Response(status_code=304, headers=headers)

@@ -1041,3 +1041,204 @@ def test_fastapi_showcase_lifespan_closes_playground_dir_on_shutdown() -> None:
 
     assert app.state.showcase._playground_dir is None
     assert not pg_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_history_corrupt_and_drifted_entries_never_500(tmp_path: Path) -> None:
+    import httpx
+
+    from scale_kg.api.app import create_app
+
+    builder = ShowcaseService()
+    try:
+        raw_snap, _ = await builder.get_snapshot_bytes()
+    finally:
+        await builder.aclose()
+
+    snap_file = tmp_path / "snapshot.json"
+    snap_file.write_bytes(raw_snap)
+    history_file = tmp_path / "history.json"
+
+    valid_entry = CommitTrendEntry(
+        git_sha="valid0000001",
+        git_ref="main",
+        built_at="2026-11-25T00:00:00Z",
+        config_fingerprint="fp-valid",
+        preset="micro",
+        hop_1_p95_ms=1.0,
+        hop_2_p95_ms=2.0,
+        hop_3_p95_ms=3.0,
+        peak_qps=250.0,
+        winner_adapter="in_memory",
+        winner_score=94.0,
+        golden_parity_passed=True,
+    )
+
+    app = create_app(enable_showcase=True, showcase_snapshot_path=snap_file)
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            # 1. Malformed JSON -> HTTP 200 []
+            history_file.write_text("{corrupt json", encoding="utf-8")
+            resp_corrupt = await client.get("/showcase/api/history")
+            assert resp_corrupt.status_code == 200
+            assert resp_corrupt.json() == []
+
+            # 2. Non-list JSON -> HTTP 200 []
+            history_file.write_text('{"not": "a-list"}', encoding="utf-8")
+            resp_obj = await client.get("/showcase/api/history")
+            assert resp_obj.status_code == 200
+            assert resp_obj.json() == []
+
+            # 3. Mixed drifted + valid items -> HTTP 200 with valid item only
+            history_file.write_text(
+                json.dumps(
+                    [
+                        {"git_sha": "drifted_missing_fields"},
+                        valid_entry.model_dump(mode="json"),
+                        "bad-scalar",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            resp_mixed = await client.get("/showcase/api/history")
+            assert resp_mixed.status_code == 200
+            data = resp_mixed.json()
+            assert len(data) == 1
+            assert data[0]["git_sha"] == "valid0000001"
+    finally:
+        await app.state.showcase.aclose()
+
+
+@pytest.mark.asyncio
+async def test_showcase_aclose_drains_inflight_cancels_queued_and_guards_concurrent_init(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tempfile
+
+    # 1. Queued cancel frees pending slot immediately (no 1-tick lag) + runner.close() cancels queued
+    started = threading.Event()
+    release = threading.Event()
+    queued_calls = 0
+
+    def blocker_job() -> str:
+        started.set()
+        release.wait(timeout=2.0)
+        return "blocker"
+
+    def queued_job() -> str:
+        nonlocal queued_calls
+        queued_calls += 1
+        return "queued"
+
+    runner = SingleFlightJobRunner(max_concurrent=1, max_pending=2)
+    blocker = asyncio.create_task(runner.run("blocker", blocker_job))
+    await asyncio.to_thread(started.wait, 2.0)
+
+    queued_cancel = asyncio.create_task(runner.run("q1", queued_job))
+    await asyncio.sleep(0.01)
+    assert runner._pending_count == 2
+    queued_cancel.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await queued_cancel
+    # Immediately freed without sleeping a tick
+    assert runner._pending_count == 1
+    assert "q1" not in runner._inflight
+
+    # Queue another unstarted job, then close via ShowcaseService.aclose()
+    service = ShowcaseService(job_runner=runner)
+    queued_close = asyncio.create_task(runner.run("q2", queued_job))
+    await asyncio.sleep(0.01)
+    assert "q2" in runner._inflight
+
+    # Add an active dummy _iceberg_inflight task to verify aclose() drains it
+    drained = False
+
+    async def _inflight_iceberg() -> tuple[object, float]:
+        nonlocal drained
+        await asyncio.sleep(0.02)
+        drained = True
+        return object(), 1.0
+
+    iceberg_task = asyncio.create_task(_inflight_iceberg())
+    service._iceberg_inflight["GQ-01"] = iceberg_task  # type: ignore[assignment]
+
+    await service.aclose()
+    assert drained is True
+    assert "q2" not in runner._inflight
+    with pytest.raises(asyncio.CancelledError):
+        await queued_close
+    release.set()
+    assert await blocker == ("blocker", False, False)
+    assert queued_calls == 0
+
+    # 2. Concurrent close() while _ensure_initialized() is creating pg_dir cleans up pg_dir immediately
+    init_entered = threading.Event()
+    init_proceed = threading.Event()
+    created_paths: list[Path] = []
+
+    def fake_init_stores() -> tuple[
+        tempfile.TemporaryDirectory[str], dict[str, object]
+    ]:
+        pg_dir = tempfile.TemporaryDirectory(prefix="scale_kg_race_test_")
+        created_paths.append(Path(pg_dir.name))
+        init_entered.set()
+        init_proceed.wait(timeout=2.0)
+        return pg_dir, {"in_memory": object()}
+
+    monkeypatch.setattr(
+        "scale_kg.showcase.concurrency._init_golden_stores_sync", fake_init_stores
+    )
+    race_service = ShowcaseService()
+    race_service._snapshot_bytes = b"{}"
+    race_service._snapshot_etag = '"etag"'
+
+    init_task = asyncio.create_task(race_service._ensure_initialized())
+    await asyncio.to_thread(init_entered.wait, 2.0)
+    assert len(created_paths) == 1
+    assert created_paths[0].exists()
+
+    await race_service.aclose()
+    init_proceed.set()
+    with pytest.raises(RuntimeError, match="closed"):
+        await init_task
+    assert race_service._playground_dir is None
+    assert not created_paths[0].exists()
+
+
+@pytest.mark.asyncio
+async def test_fastapi_showcase_require_auth_sets_private_no_store_cache_control() -> (
+    None
+):
+    import httpx
+
+    from scale_kg.api.app import create_app
+
+    auth_app = create_app(
+        enable_showcase=True,
+        api_key="cache-secret-key",
+        showcase_require_auth=True,
+    )
+    headers = {"X-API-Key": "cache-secret-key"}
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=auth_app), base_url="http://test"
+        ) as client:
+            redir = await client.get("/showcase", headers=headers)
+            assert redir.status_code == 307
+            assert redir.headers["cache-control"] == "private, no-store"
+
+            index_resp = await client.get("/showcase/", headers=headers)
+            assert index_resp.status_code == 200
+            assert index_resp.headers["cache-control"] == "private, no-store"
+
+            asset_resp = await client.get("/showcase/assets/app.js", headers=headers)
+            assert asset_resp.status_code == 200
+            assert asset_resp.headers["cache-control"] == "private, no-store"
+
+            snap_resp = await client.get("/showcase/api/snapshot", headers=headers)
+            assert snap_resp.status_code == 200
+            assert snap_resp.headers["cache-control"] == "private, no-store"
+    finally:
+        await auth_app.state.showcase.aclose()

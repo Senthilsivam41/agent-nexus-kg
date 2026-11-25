@@ -425,6 +425,9 @@ export function renderLoadEscalator(snapshot, state) {
 
   const { preset: activePreset, bundle: activeBundle } = getActiveBundle(snapshot, state);
   const availablePresets = ['micro', 'local'];
+  if (snapshot?.benchmarks?.cluster) {
+    availablePresets.push('cluster');
+  }
 
   // Supernode degree ramp chart + table
   const snPoints = (supernode.points || []).map((pt) => ({
@@ -602,6 +605,19 @@ export function renderLoadEscalator(snapshot, state) {
     ? `<span class="pill pill-live">${state.lastRampMeta.cache_hit ? 'TTL Cache Hit' : state.lastRampMeta.coalesced ? 'Coalesced Single-Flight' : 'Fresh Run'}</span>`
     : '';
   const activeAdapterCount = Object.keys(activeBundle?.suite_result?.adapters || {}).length;
+  const isLiveClusterUnsupported = state.mode === 'live' && activePreset === 'cluster';
+  const rampBtnDisabled = state.busyAction === 'ramp' || isLiveClusterUnsupported;
+  const rampBtnLabel =
+    state.busyAction === 'ramp'
+      ? 'Running Ramp…'
+      : isLiveClusterUnsupported
+        ? 'Snapshot Only (Cluster)'
+        : state.mode === 'live'
+          ? 'Run Coalesced Ramp'
+          : 'Replay Preset Snapshot';
+  const rampBtnTitle = isLiveClusterUnsupported
+    ? 'Live HTTP /ramp/run is bounded to MICRO and LOCAL presets; displaying pre-built CLUSTER snapshot.'
+    : '';
 
   return `
     <section class="panel">
@@ -634,8 +650,9 @@ export function renderLoadEscalator(snapshot, state) {
             type="button"
             class="btn btn-primary"
             data-action="run-ramp"
-            ${state.busyAction === 'ramp' ? 'disabled' : ''}
-          >${state.busyAction === 'ramp' ? 'Running Ramp…' : state.mode === 'live' ? 'Run Coalesced Ramp' : 'Replay Preset Snapshot'}</button>
+            ${rampBtnTitle ? `title="${escapeHtml(rampBtnTitle)}"` : ''}
+            ${rampBtnDisabled ? 'disabled' : ''}
+          >${escapeHtml(rampBtnLabel)}</button>
           ${rampMeta}
         </div>
       </div>
@@ -1023,9 +1040,14 @@ export function renderAdapterSwitchboard(snapshot, state) {
       return b.scaleScore - a.scaleScore;
     });
 
+  const scaleWinner =
+    scaledCards.find((card) => card.eligible_for_production)?.adapter_name ||
+    bundle?.winner_adapter ||
+    null;
+
   const scorecardRows = scaledCards
     .map((card, idx) => {
-      const isWinner = card.adapter_name === bundle?.winner_adapter;
+      const isWinner = Boolean(scaleWinner) && card.adapter_name === scaleWinner;
       return `
         <tr class="${isWinner ? 'row-highlight' : ''}">
           <td class="num">#${escapeHtml(idx + 1)}</td>
@@ -1038,6 +1060,7 @@ export function renderAdapterSwitchboard(snapshot, state) {
           <td class="num align-right">${escapeHtml(card.scalability_resilience_score)}</td>
           <td class="num align-right">${escapeHtml(card.costAtScale ?? card.cost_score)}</td>
           <td class="num align-right">${escapeHtml(card.operability_score)}</td>
+          <td class="num align-right">${escapeHtml(card.graphrag_fit_score)}</td>
           <td class="num align-right"><strong>${escapeHtml(card.scaleScore.toFixed(2))}</strong></td>
           <td>${
             card.eligible_for_production
@@ -1204,7 +1227,7 @@ export function renderAdapterSwitchboard(snapshot, state) {
       </div>
 
       <div class="callout callout-ok">
-        <strong>Gate 2 Recommendation:</strong> <code>${escapeHtml(bundle?.winner_adapter || 'iceberg_puppygraph')}</code> leads production-eligible engines at <strong>${escapeHtml(scaleTarget)} edges</strong> while <code>in_memory</code> serves as the non-persistent reference baseline.
+        <strong>Gate 2 Recommendation:</strong> <code>${escapeHtml(scaleWinner || 'iceberg_puppygraph')}</code> leads production-eligible engines at <strong>${escapeHtml(scaleTarget)} edges</strong> while <code>in_memory</code> serves as the non-persistent reference baseline.
       </div>
 
       <div class="table-wrap">
@@ -1221,6 +1244,7 @@ export function renderAdapterSwitchboard(snapshot, state) {
               <th class="align-right">Scale (25%)</th>
               <th class="align-right">Cost (15%)</th>
               <th class="align-right">Ops (15%)</th>
+              <th class="align-right">GraphRAG Fit (10%)</th>
               <th class="align-right">Weighted Total</th>
               <th>Prod Gate</th>
             </tr>
@@ -1530,7 +1554,7 @@ export function renderCommitTrends(snapshot, history) {
 
       ${
         isBaselineOnly
-          ? '<div class="callout callout-warn"><strong>Baseline Snapshot Active:</strong> Showing current build metrics as the initial data point. Subsequent CI builds append to rolling <code>history.json</code> (up to 50 commits).</div>'
+          ? '<div class="callout callout-warn"><strong>Baseline Snapshot Active:</strong> Showing current build metrics as the initial data point. Subsequent CI builds append to rolling <code>history.json</code> (up to 100 commits).</div>'
           : ''
       }
 

@@ -132,19 +132,20 @@ def _adapter_catalog(probe_remote: bool) -> list[AdapterCatalogEntry]:
             "iceberg_puppygraph",
             IcebergPuppyGraphStore,
             iceberg_profile,
-            None,
+            os.environ.get("SCALE_KG_PUPPYGRAPH_URL")
+            or os.environ.get("PUPPYGRAPH_URL"),
         ),
         (
             "hugegraph",
             HugeGraphStore,
             HugeGraphStore(base_url="http://localhost:8080").cost_profile(),
-            os.environ.get("HUGEGRAPH_URL"),
+            os.environ.get("SCALE_KG_HUGEGRAPH_URL") or os.environ.get("HUGEGRAPH_URL"),
         ),
         (
             "neo4j",
             Neo4jGraphStore,
             Neo4jGraphStore(uri="bolt://localhost:7687").cost_profile(),
-            os.environ.get("NEO4J_HTTP_URL"),
+            os.environ.get("SCALE_KG_NEO4J_URI") or os.environ.get("NEO4J_HTTP_URL"),
         ),
         (
             "janusgraph",
@@ -165,8 +166,13 @@ def _adapter_catalog(probe_remote: bool) -> list[AdapterCatalogEntry]:
         availability: AdapterAvailability
         if profile.is_stub:
             availability = "contract_stub"
-        elif key in ("in_memory", "iceberg_puppygraph"):
+        elif key == "in_memory":
             availability = "verified_local"
+        elif key == "iceberg_puppygraph":
+            if probe_remote and _probe_http_endpoint(remote_url):
+                availability = "live_remote"
+            else:
+                availability = "verified_local"
         elif probe_remote and _probe_http_endpoint(remote_url):
             availability = "live_remote"
         else:
