@@ -5,7 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast
 
@@ -89,6 +90,17 @@ def create_app(
         embedder=embedder,
     )
 
+    @asynccontextmanager
+    async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            if (
+                hasattr(fastapi_app.state, "showcase")
+                and fastapi_app.state.showcase is not None
+            ):
+                fastapi_app.state.showcase.close()
+
     app = FastAPI(
         title="Agent Nexus KG (scale-kg) API",
         version="0.1.0",
@@ -96,6 +108,7 @@ def create_app(
             "Engine-agnostic Semantic Knowledge Graph REST & gRPC service "
             "enforcing Lean Graph guardrails, supernode bucketing, and Hybrid GraphRAG."
         ),
+        lifespan=lifespan,
     )
     app.state.scale_kg = state
 

@@ -948,3 +948,95 @@ async def test_fastapi_showcase_endpoints_static_and_ramp_backpressure_429(
     finally:
         if hasattr(env_app.state, "showcase"):
             env_app.state.showcase.close()
+
+
+def test_create_app_showcase_require_auth_fails_closed_without_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scale_kg.api.app import create_app
+    from scale_kg.showcase.router import create_showcase_router
+
+    monkeypatch.delenv("SCALE_KG_API_KEY", raising=False)
+
+    with pytest.raises(ValueError, match="non-empty api_key"):
+        create_app(enable_showcase=True, showcase_require_auth=True, api_key=None)
+
+    with pytest.raises(ValueError, match="non-empty api_key"):
+        create_app(enable_showcase=True, showcase_require_auth=True, api_key="   ")
+
+    service = ShowcaseService()
+    try:
+        with pytest.raises(ValueError, match="non-empty api_key"):
+            create_showcase_router(service, api_key=None, require_auth=True)
+    finally:
+        service.close()
+
+
+@pytest.mark.asyncio
+async def test_fastapi_showcase_simulation_timeout_returns_504(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+
+    from scale_kg.api.app import create_app
+
+    app = create_app(enable_showcase=True)
+    try:
+
+        async def _timeout(*_args: object, **_kwargs: object) -> object:
+            raise TimeoutError("execution time budget exceeded")
+
+        monkeypatch.setattr(app.state.showcase, "simulate_adapter_switch", _timeout)
+        monkeypatch.setattr(app.state.showcase, "simulate_guardrail", _timeout)
+        monkeypatch.setattr(app.state.showcase, "simulate_hot_path", _timeout)
+        monkeypatch.setattr(app.state.showcase, "simulate_hybrid", _timeout)
+
+        endpoints: list[tuple[str, dict[str, object] | None]] = [
+            (
+                "/showcase/api/simulate/adapter-switch",
+                {"query_id": "GQ-03", "adapters": ["in_memory"]},
+            ),
+            (
+                "/showcase/api/simulate/guardrail",
+                {"probe_id": "preflight_depth_cap"},
+            ),
+            (
+                "/showcase/api/simulate/hot-path",
+                {"hits": 3, "threshold": 3},
+            ),
+            ("/showcase/api/simulate/hybrid", None),
+        ]
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            for path, payload in endpoints:
+                resp = await client.post(path, json=payload)
+                assert resp.status_code == 504
+                body = resp.json()
+                assert body["error"] == "simulation_timeout"
+                assert "detail" in body
+    finally:
+        if hasattr(app.state, "showcase"):
+            app.state.showcase.close()
+
+
+def test_fastapi_showcase_lifespan_closes_playground_dir_on_shutdown() -> None:
+    from fastapi.testclient import TestClient
+
+    from scale_kg.api.app import create_app
+
+    app = create_app(enable_showcase=True)
+    with TestClient(app) as client:
+        resp = client.post(
+            "/showcase/api/simulate/adapter-switch",
+            json={"query_id": "GQ-03"},
+        )
+        assert resp.status_code == 200
+        playground_dir = app.state.showcase._playground_dir
+        assert playground_dir is not None
+        pg_path = Path(playground_dir.name)
+        assert pg_path.exists()
+
+    assert app.state.showcase._playground_dir is None
+    assert not pg_path.exists()

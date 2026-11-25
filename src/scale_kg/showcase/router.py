@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, TypeVar
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Response
 from fastapi.responses import FileResponse, JSONResponse
@@ -53,6 +54,22 @@ def _etag_matches(if_none_match: str | None, etag: str) -> bool:
     return False
 
 
+_T = TypeVar("_T")
+
+_SIMULATION_TIMEOUT_BODY: dict[str, str] = {
+    "error": "simulation_timeout",
+    "detail": "Showcase simulation exceeded execution time budget.",
+}
+
+
+async def _run_simulation_with_timeout(coro: Awaitable[_T]) -> _T | JSONResponse:
+    """Await a showcase simulation, returning HTTP 504 on ``TimeoutError``."""
+    try:
+        return await coro
+    except TimeoutError:
+        return JSONResponse(status_code=504, content=_SIMULATION_TIMEOUT_BODY)
+
+
 def create_showcase_router(
     service: ShowcaseService,
     *,
@@ -60,6 +77,8 @@ def create_showcase_router(
     require_auth: bool = False,
 ) -> APIRouter:
     """Create the FastAPI router for `/showcase` UI and `/showcase/api/*` endpoints."""
+    if require_auth and not (api_key and api_key.strip()):
+        raise ValueError("showcase_require_auth=True requires a non-empty api_key.")
 
     async def _check_auth(
         x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
@@ -67,7 +86,7 @@ def create_showcase_router(
     ) -> None:
         if not require_auth:
             return
-        if not verify_api_key_token(
+        if not api_key or not verify_api_key_token(
             api_key,
             x_api_key=x_api_key,
             authorization=authorization,
@@ -133,22 +152,26 @@ def create_showcase_router(
     @router.post("/api/simulate/adapter-switch", response_model=AdapterSwitchResponse)
     async def simulate_adapter_switch(
         request: AdapterSwitchRequest,
-    ) -> AdapterSwitchResponse:
-        return await service.simulate_adapter_switch(request)
+    ) -> AdapterSwitchResponse | JSONResponse:
+        return await _run_simulation_with_timeout(
+            service.simulate_adapter_switch(request)
+        )
 
     @router.post("/api/simulate/guardrail", response_model=GuardrailProbeResult)
     async def simulate_guardrail(
         request: GuardrailProbeRequest,
-    ) -> GuardrailProbeResult:
-        return await service.simulate_guardrail(request)
+    ) -> GuardrailProbeResult | JSONResponse:
+        return await _run_simulation_with_timeout(service.simulate_guardrail(request))
 
     @router.post("/api/simulate/hot-path", response_model=HotPathDemoResult)
-    async def simulate_hot_path(request: HotPathRequest) -> HotPathDemoResult:
-        return await service.simulate_hot_path(request)
+    async def simulate_hot_path(
+        request: HotPathRequest,
+    ) -> HotPathDemoResult | JSONResponse:
+        return await _run_simulation_with_timeout(service.simulate_hot_path(request))
 
     @router.post("/api/simulate/hybrid", response_model=HybridRagDemoResult)
-    async def simulate_hybrid() -> HybridRagDemoResult:
-        return await service.simulate_hybrid()
+    async def simulate_hybrid() -> HybridRagDemoResult | JSONResponse:
+        return await _run_simulation_with_timeout(service.simulate_hybrid())
 
     @router.post("/api/ramp/run", response_model=RampRunResponse)
     async def run_ramp(request: RampRunRequest) -> RampRunResponse | JSONResponse:
