@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Nexus KG — Scale Showcase</title>
+  <link rel="stylesheet" href="./assets/styles.css">
+</head>
+<body data-mode="live">
+  <a class="skip-link" href="#app-content">Skip to dashboard content</a>
+
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand-block">
+        <div class="brand-row">
+          <span class="brand-mark" aria-hidden="true">KG</span>
+          <div>
+            <h1 class="brand-title">Agent Nexus KG — Scale Showcase</h1>
+            <p class="brand-subtitle">100M → 10B+ Edge Lean Graph, Guardrails &amp; Hybrid GraphRAG Telemetry</p>
+          </div>
+        </div>
+        <div class="meta-strip" id="provenance-strip" aria-label="Build provenance">
+          <span class="pill pill-live" id="mode-badge">LIVE API</span>
+          <span class="meta-chip" id="meta-sha">SHA: —</span>
+          <span class="meta-chip" id="meta-ref">REF: —</span>
+          <span class="meta-chip" id="meta-built">BUILT: —</span>
+          <span class="meta-chip" id="meta-fp">CFG: —</span>
+        </div>
+      </div>
+
+      <nav class="tab-nav" role="tablist" aria-label="Showcase dashboard views" id="main-tablist">
+        <button
+          type="button"
+          class="tab-btn is-active"
+          role="tab"
+          id="tab-system-map"
+          aria-selected="true"
+          aria-controls="app-content"
+          data-tab="system-map"
+        >System Map</button>
+        <button
+          type="button"
+          class="tab-btn"
+          role="tab"
+          id="tab-load-escalator"
+          aria-selected="false"
+          aria-controls="app-content"
+          tabindex="-1"
+          data-tab="load-escalator"
+        >Load Escalator</button>
+        <button
+          type="button"
+          class="tab-btn"
+          role="tab"
+          id="tab-adapter-switchboard"
+          aria-selected="false"
+          aria-controls="app-content"
+          tabindex="-1"
+          data-tab="adapter-switchboard"
+        >Adapter Switchboard</button>
+        <button
+          type="button"
+          class="tab-btn"
+          role="tab"
+          id="tab-hybrid-rag"
+          aria-selected="false"
+          aria-controls="app-content"
+          tabindex="-1"
+          data-tab="hybrid-rag"
+        >Hybrid GraphRAG</button>
+        <button
+          type="button"
+          class="tab-btn"
+          role="tab"
+          id="tab-commit-trends"
+          aria-selected="false"
+          aria-controls="app-content"
+          tabindex="-1"
+          data-tab="commit-trends"
+        >Commit Trends</button>
+      </nav>
+    </div>
+  </header>
+
+  <div class="shell">
+    <div class="status-banner is-hidden" id="status-banner" role="status" aria-live="polite"></div>
+
+    <main
+      id="app-content"
+      class="main-content"
+      role="tabpanel"
+      aria-labelledby="tab-system-map"
+      tabindex="-1"
+    >
+      <section class="panel loading-panel">
+        <p class="loading-title">Loading Scale-KG telemetry snapshot…</p>
+        <p class="muted">Introspecting active thresholds, 7-workload benchmarks, and Gate 2 scorecards.</p>
+      </section>
+    </main>
+  </div>
+
+  <footer class="footer">
+    <div class="footer-inner">
+      <span>Agent Nexus KG (<code>scale_kg</code>) — Zero-Build Telemetry Dashboard</span>
+      <span id="footer-meta" class="muted">Awaiting snapshot…</span>
+    </div>
+  </footer>
+
+  <script type="module" src="./assets/app.js"></script>
+</body>
+</html>
