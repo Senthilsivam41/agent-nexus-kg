@@ -106,12 +106,12 @@ def _detect_git_metadata() -> tuple[str, str]:
 
 
 def _probe_http_endpoint(url: str | None) -> bool:
-    if not url:
+    if not url or not url.startswith(("http://", "https://")):
         return False
     try:
         resp = httpx.get(url, timeout=0.5)
         return resp.status_code < 500
-    except httpx.HTTPError:
+    except (httpx.HTTPError, httpx.InvalidURL, ValueError):
         return False
 
 

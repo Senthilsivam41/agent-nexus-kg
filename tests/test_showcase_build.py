@@ -188,6 +188,48 @@ async def test_build_showcase_site_corrupt_history_falls_back_gracefully(
 
 
 @pytest.mark.asyncio
+async def test_build_showcase_site_preserves_valid_entries_across_partial_invalid_history(
+    tmp_path: Path,
+) -> None:
+    valid_entry = CommitTrendEntry(
+        git_sha="validsha0001",
+        git_ref="main",
+        built_at="2026-11-24T00:00:00+00:00",
+        config_fingerprint="0000000000000000",
+        preset="micro",
+        hop_1_p95_ms=1.5,
+        hop_2_p95_ms=2.5,
+        hop_3_p95_ms=3.5,
+        peak_qps=50.0,
+        winner_adapter="iceberg_puppygraph",
+        winner_score=85.0,
+        golden_parity_passed=True,
+    )
+    mixed_history = tmp_path / "mixed_history.json"
+    mixed_history.write_text(
+        json.dumps(
+            [
+                {"git_sha": "drifted_old_record"},
+                valid_entry.model_dump(mode="json"),
+                "not-even-a-dict",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    out_dir = tmp_path / "out_mixed"
+    await build_showcase_site(
+        out_dir=out_dir,
+        presets=(ScalePreset.MICRO,),
+        history_in=mixed_history,
+        git_sha="currsha0003",
+        git_ref="main",
+    )
+    hist = json.loads((out_dir / "history.json").read_text(encoding="utf-8"))
+    assert [h["git_sha"] for h in hist] == ["validsha0001", "currsha0003"]
+
+
+@pytest.mark.asyncio
 async def test_build_showcase_site_merges_valid_history_and_renders_delta(
     tmp_path: Path,
 ) -> None:

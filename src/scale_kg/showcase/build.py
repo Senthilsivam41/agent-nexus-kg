@@ -152,16 +152,22 @@ def _render_static_index_html() -> str:
 
 
 def _load_prior_history(history_in: Path | None) -> list[CommitTrendEntry]:
-    """Load prior CommitTrendEntry records, falling back to empty on invalid data."""
+    """Load prior CommitTrendEntry records, skipping individually invalid entries."""
     if history_in is None or not history_in.is_file():
         return []
     try:
         raw_hist = json.loads(history_in.read_text(encoding="utf-8"))
-        if isinstance(raw_hist, list):
-            return [CommitTrendEntry.model_validate(item) for item in raw_hist]
-    except (OSError, ValueError, ValidationError):
+    except (OSError, ValueError):
         return []
-    return []
+    if not isinstance(raw_hist, list):
+        return []
+    entries: list[CommitTrendEntry] = []
+    for item in raw_hist:
+        try:
+            entries.append(CommitTrendEntry.model_validate(item))
+        except ValidationError:
+            continue
+    return entries
 
 
 async def build_showcase_site(

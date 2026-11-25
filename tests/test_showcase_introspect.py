@@ -15,7 +15,7 @@ from scale_kg.benchmark.generator import SCALE_PRESETS
 from scale_kg.benchmark.golden_queries import FROZEN_GOLDEN_QUERIES
 from scale_kg.config import GuardrailConfig, LatencyBudgetConfig, ScaleKGConfig
 from scale_kg.core.models import Domain
-from scale_kg.showcase.introspect import introspect_system
+from scale_kg.showcase.introspect import _probe_http_endpoint, introspect_system
 
 
 def test_introspect_captures_all_live_configs_domains_adapters_and_presets() -> None:
@@ -59,3 +59,11 @@ def test_introspect_fingerprint_updates_when_config_changes() -> None:
     assert modified.supernode_degree_threshold == 250
     assert modified.num_buckets == 8
     assert any("250" in rule.threshold for rule in modified.switch_rules)
+
+
+def test_probe_http_endpoint_rejects_malformed_and_non_http_urls() -> None:
+    assert _probe_http_endpoint(None) is False
+    assert _probe_http_endpoint("") is False
+    assert _probe_http_endpoint("not-a-url") is False
+    assert _probe_http_endpoint("ftp://localhost:8080") is False
+    assert _probe_http_endpoint("http://[invalid-ipv6") is False

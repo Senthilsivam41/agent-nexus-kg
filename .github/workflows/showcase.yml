@@ -45,9 +45,11 @@ jobs:
         run: |
           curl -fsSL --max-time 10 "${SHOWCASE_PUBLIC_URL}/history.json" -o /tmp/prev-history.json || echo "[]" > /tmp/prev-history.json
       - name: Build static showcase bundle
+        env:
+          INCLUDE_CLUSTER: ${{ github.event.inputs.include_cluster }}
         run: |
           PRESETS="micro,local"
-          if [ "${{ github.event.inputs.include_cluster }}" = "true" ]; then
+          if [ "${INCLUDE_CLUSTER}" = "true" ]; then
             PRESETS="micro,local,cluster"
           fi
           uv run python -m scale_kg.showcase.build \
@@ -58,7 +60,7 @@ jobs:
             --git-ref "${GITHUB_REF_NAME}" \
             --summary-out /tmp/showcase-summary.md
       - name: Upload showcase artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: scale-kg-showcase
           path: dist/showcase
@@ -68,17 +70,18 @@ jobs:
         env:
           NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
           NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           if [ -z "${NETLIFY_AUTH_TOKEN}" ] || [ -z "${NETLIFY_SITE_ID}" ]; then
             echo "NETLIFY_AUTH_TOKEN / NETLIFY_SITE_ID secrets not set; skipping PR preview deploy."
             exit 0
           fi
-          npx --yes netlify-cli deploy \
+          npx --yes netlify-cli@23.11.0 deploy \
             --dir=dist/showcase \
-            --alias="pr-${{ github.event.pull_request.number }}" \
-            --message="PR #${{ github.event.pull_request.number }} (${GITHUB_SHA::12})"
+            --alias="pr-${PR_NUMBER}" \
+            --message="PR #${PR_NUMBER} (${GITHUB_SHA::12})"
       - name: Deploy Netlify production
-        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
         env:
           NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
           NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
@@ -87,7 +90,7 @@ jobs:
             echo "NETLIFY_AUTH_TOKEN / NETLIFY_SITE_ID secrets not set; skipping deploy."
             exit 0
           fi
-          npx --yes netlify-cli deploy \
+          npx --yes netlify-cli@23.11.0 deploy \
             --dir=dist/showcase \
             --prod \
             --message="Commit ${GITHUB_SHA::12}"
