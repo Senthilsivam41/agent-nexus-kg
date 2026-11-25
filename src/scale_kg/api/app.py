@@ -74,6 +74,9 @@ def create_app(
     api_key: str | None = None,
     config: ScaleKGConfig | None = None,
     embedder: Callable[[str], list[float]] | None = None,
+    enable_showcase: bool = True,
+    showcase_snapshot_path: str | Path | None = None,
+    showcase_require_auth: bool = False,
 ) -> FastAPI:
     """Create and configure the Scale-KG FastAPI REST & gRPC-bridge application."""
     state = ScaleKGApiState(
@@ -333,6 +336,35 @@ def create_app(
             )
         except GrpcRpcError as err:
             return _grpc_error_response(err)
+
+    if enable_showcase:
+        from scale_kg.showcase.concurrency import ShowcaseService
+        from scale_kg.showcase.router import create_showcase_router
+
+        env_snapshot = os.environ.get("SCALE_KG_SHOWCASE_SNAPSHOT", "").strip()
+        resolved_snapshot = (
+            Path(showcase_snapshot_path)
+            if showcase_snapshot_path is not None
+            else (Path(env_snapshot) if env_snapshot else None)
+        )
+        history_path = (
+            resolved_snapshot.parent / "history.json"
+            if resolved_snapshot is not None
+            else None
+        )
+        showcase_service = ShowcaseService(
+            snapshot_path=resolved_snapshot,
+            history_path=history_path,
+            config=config,
+        )
+        app.state.showcase = showcase_service
+        app.include_router(
+            create_showcase_router(
+                showcase_service,
+                api_key=state.api_key,
+                require_auth=showcase_require_auth,
+            )
+        )
 
     return app
 

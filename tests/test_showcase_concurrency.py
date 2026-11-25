@@ -675,3 +675,276 @@ async def test_showcase_service_adapter_switch_deduplicates_preserving_order() -
         assert ordered_resp.parity_matched is True
     finally:
         service.close()
+
+
+@pytest.mark.asyncio
+async def test_fastapi_showcase_handles_50_concurrent_http_clients_and_etag() -> None:
+    import httpx
+
+    from scale_kg.api.app import create_app
+
+    app = create_app(enable_showcase=True)
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            first = await client.get("/showcase/api/snapshot")
+            assert first.status_code == 200
+            etag = first.headers["etag"]
+            assert first.headers["cache-control"] == "public, max-age=30"
+
+            not_mod = await client.get(
+                "/showcase/api/snapshot", headers={"If-None-Match": etag}
+            )
+            assert not_mod.status_code == 304
+            assert not_mod.headers["etag"] == etag
+
+            weak_not_mod = await client.get(
+                "/showcase/api/snapshot", headers={"If-None-Match": f"W/{etag}"}
+            )
+            assert weak_not_mod.status_code == 304
+
+            traversal = await client.get("/showcase/assets/../../pyproject.toml")
+            assert traversal.status_code == 404
+
+            encoded_traversal = await client.get(
+                "/showcase/assets/..%2F..%2Fpyproject.toml"
+            )
+            assert encoded_traversal.status_code == 404
+
+            async def _hit(idx: int) -> int:
+                if idx % 2 == 0:
+                    resp = await client.get("/showcase/api/snapshot")
+                    return resp.status_code
+                resp = await client.post(
+                    "/showcase/api/simulate/guardrail",
+                    json={"probe_id": "preflight_depth_cap"},
+                )
+                return resp.status_code
+
+            statuses = await asyncio.gather(*[_hit(i) for i in range(50)])
+            assert statuses == [200] * 50
+    finally:
+        if hasattr(app.state, "showcase"):
+            app.state.showcase.close()
+
+    # Verify optional API-key enforcement when showcase_require_auth=True
+    auth_app = create_app(
+        enable_showcase=True,
+        api_key="test-secret-key",
+        showcase_require_auth=True,
+    )
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=auth_app), base_url="http://test"
+        ) as auth_client:
+            unauth = await auth_client.get("/showcase/api/snapshot")
+            assert unauth.status_code == 401
+
+            wrong = await auth_client.get(
+                "/showcase/api/snapshot", headers={"X-API-Key": "wrong-key"}
+            )
+            assert wrong.status_code == 401
+
+            ok = await auth_client.get(
+                "/showcase/api/snapshot", headers={"X-API-Key": "test-secret-key"}
+            )
+            assert ok.status_code == 200
+
+            bearer_ok = await auth_client.get(
+                "/showcase/api/snapshot",
+                headers={"Authorization": "Bearer test-secret-key"},
+            )
+            assert bearer_ok.status_code == 200
+    finally:
+        if hasattr(auth_app.state, "showcase"):
+            auth_app.state.showcase.close()
+
+
+@pytest.mark.asyncio
+async def test_fastapi_showcase_disabled_returns_404_and_preserves_v1() -> None:
+    import httpx
+
+    from scale_kg.api.app import create_app
+
+    app = create_app(enable_showcase=False)
+    assert not hasattr(app.state, "showcase")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        assert (await client.get("/showcase")).status_code == 404
+        assert (await client.get("/showcase/api/snapshot")).status_code == 404
+        health = await client.get("/v1/health")
+        assert health.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_fastapi_showcase_endpoints_static_and_ramp_backpressure_429(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+
+    from scale_kg.api.app import create_app
+    from scale_kg.showcase import router as showcase_router
+
+    # Pre-seed snapshot + sibling history.json on disk to test snapshot_path resolution
+    builder = ShowcaseService()
+    try:
+        raw_snap, _ = await builder.get_snapshot_bytes()
+    finally:
+        builder.close()
+
+    snap_file = tmp_path / "snapshot.json"
+    snap_file.write_bytes(raw_snap)
+    history_entry = CommitTrendEntry(
+        git_sha="abc123def456",
+        git_ref="main",
+        built_at="2026-11-25T00:00:00Z",
+        config_fingerprint="fp-http-1",
+        preset="micro",
+        hop_1_p95_ms=1.1,
+        hop_2_p95_ms=2.2,
+        hop_3_p95_ms=3.3,
+        peak_qps=420.0,
+        winner_adapter="in_memory",
+        winner_score=96.0,
+        golden_parity_passed=True,
+    )
+    (tmp_path / "history.json").write_text(
+        json.dumps([history_entry.model_dump(mode="json")]),
+        encoding="utf-8",
+    )
+
+    # Static UI absent -> clean 404; present -> 200 with allowlist enforcement
+    static_dir = tmp_path / "static"
+    static_dir.mkdir()
+    monkeypatch.setattr(showcase_router, "STATIC_DIR", static_dir)
+
+    app = create_app(enable_showcase=True, showcase_snapshot_path=snap_file)
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            assert (await client.get("/showcase")).status_code == 404
+            assert (await client.get("/showcase/assets/app.js")).status_code == 404
+
+            (static_dir / "index.html").write_text(
+                "<h1>Showcase</h1>", encoding="utf-8"
+            )
+            (static_dir / "app.js").write_text("console.log('ok');", encoding="utf-8")
+            (static_dir / "secret.txt").write_text("top-secret", encoding="utf-8")
+
+            idx_resp = await client.get("/showcase")
+            assert idx_resp.status_code == 200
+            assert "text/html" in idx_resp.headers["content-type"]
+            assert idx_resp.headers["cache-control"] == "public, max-age=300"
+
+            slash_resp = await client.get("/showcase/")
+            assert slash_resp.status_code == 200
+
+            js_resp = await client.get("/showcase/assets/app.js")
+            assert js_resp.status_code == 200
+            assert "javascript" in js_resp.headers["content-type"]
+
+            # Non-allowlisted file must return 404 even when present on disk
+            assert (await client.get("/showcase/assets/secret.txt")).status_code == 404
+
+            hist_resp = await client.get("/showcase/api/history")
+            assert hist_resp.status_code == 200
+            hist_data = hist_resp.json()
+            assert len(hist_data) == 1
+            assert hist_data[0]["git_sha"] == "abc123def456"
+
+            sw_resp = await client.post(
+                "/showcase/api/simulate/adapter-switch",
+                json={"query_id": "GQ-03", "adapters": ["in_memory"]},
+            )
+            assert sw_resp.status_code == 200
+            assert sw_resp.json()["parity_matched"] is True
+
+            hp_resp = await client.post(
+                "/showcase/api/simulate/hot-path",
+                json={"hits": 4, "threshold": 3},
+            )
+            assert hp_resp.status_code == 200
+            assert hp_resp.json()["promoted_at_hit"] == 3
+
+            hy_resp = await client.post("/showcase/api/simulate/hybrid")
+            assert hy_resp.status_code == 200
+            assert hy_resp.json()["citation_count"] >= 1
+
+            # Verify POST /showcase/api/ramp/run happy path (200) before backpressure test
+            bundle = await run_preset_benchmark(
+                ScalePreset.MICRO, adapters=("in_memory",)
+            )
+            monkeypatch.setattr(
+                "scale_kg.showcase.concurrency._run_benchmark_sync",
+                lambda _req: bundle,
+            )
+            ramp_ok = await client.post(
+                "/showcase/api/ramp/run",
+                json={"preset": "micro", "adapters": ["in_memory"], "seed": 42},
+            )
+            assert ramp_ok.status_code == 200
+            ramp_payload = ramp_ok.json()
+            assert ramp_payload["cache_hit"] is False
+            assert ramp_payload["coalesced"] is False
+            assert ramp_payload["bundle"]["preset"] == "micro"
+
+            # Verify HTTP 429 + Retry-After when BackpressureError is raised
+            async def _raise_backpressure(_req: RampRunRequest) -> object:
+                raise BackpressureError("Queue full", retry_after_seconds=9)
+
+            monkeypatch.setattr(app.state.showcase, "run_ramp", _raise_backpressure)
+            bp_resp = await client.post(
+                "/showcase/api/ramp/run",
+                json={"preset": "micro", "adapters": ["in_memory"], "seed": 42},
+            )
+            assert bp_resp.status_code == 429
+            assert bp_resp.headers["retry-after"] == "9"
+            assert bp_resp.json() == {
+                "error": "rate_limited",
+                "detail": "Queue full",
+            }
+            assert str(tmp_path) not in bp_resp.text
+    finally:
+        if hasattr(app.state, "showcase"):
+            app.state.showcase.close()
+
+    # Verify SCALE_KG_SHOWCASE_SNAPSHOT env var resolution and public showcase with API key on /v1/*
+    from scale_kg.showcase import (
+        ShowcaseService as ExportedService,
+    )
+    from scale_kg.showcase import (
+        create_showcase_router,
+    )
+
+    assert ExportedService is ShowcaseService
+    assert callable(create_showcase_router)
+
+    monkeypatch.setenv("SCALE_KG_SHOWCASE_SNAPSHOT", str(snap_file))
+    env_app = create_app(
+        enable_showcase=True,
+        api_key="v1-only-secret",
+        showcase_require_auth=False,
+    )
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=env_app), base_url="http://test"
+        ) as env_client:
+            v1_unauth = await env_client.get("/v1/stats")
+            assert v1_unauth.status_code == 401
+
+            snap_resp = await env_client.get("/showcase/api/snapshot")
+            assert snap_resp.status_code == 200
+            assert "v1-only-secret" not in snap_resp.text
+            assert str(tmp_path) not in snap_resp.text
+
+            env_hist = await env_client.get("/showcase/api/history")
+            assert env_hist.status_code == 200
+            assert len(env_hist.json()) == 1
+    finally:
+        if hasattr(env_app.state, "showcase"):
+            env_app.state.showcase.close()
