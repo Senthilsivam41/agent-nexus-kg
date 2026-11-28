@@ -34,6 +34,8 @@ spec:
         - /v1/lakehouse/slices
         - /v1/directory/aliases
         - /v1/directory/resolve/{entity_id}
+        - /showcase
+        - /showcase/api/snapshot
     grpc:
       protocol: grpc
       proto: src/scale_kg/api/scale_kg.proto

@@ -5,7 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast
 
@@ -74,6 +75,9 @@ def create_app(
     api_key: str | None = None,
     config: ScaleKGConfig | None = None,
     embedder: Callable[[str], list[float]] | None = None,
+    enable_showcase: bool = True,
+    showcase_snapshot_path: str | Path | None = None,
+    showcase_require_auth: bool = False,
 ) -> FastAPI:
     """Create and configure the Scale-KG FastAPI REST & gRPC-bridge application."""
     state = ScaleKGApiState(
@@ -86,6 +90,17 @@ def create_app(
         embedder=embedder,
     )
 
+    @asynccontextmanager
+    async def lifespan(fastapi_app: FastAPI) -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            if (
+                hasattr(fastapi_app.state, "showcase")
+                and fastapi_app.state.showcase is not None
+            ):
+                await fastapi_app.state.showcase.aclose()
+
     app = FastAPI(
         title="Agent Nexus KG (scale-kg) API",
         version="0.1.0",
@@ -93,6 +108,7 @@ def create_app(
             "Engine-agnostic Semantic Knowledge Graph REST & gRPC service "
             "enforcing Lean Graph guardrails, supernode bucketing, and Hybrid GraphRAG."
         ),
+        lifespan=lifespan,
     )
     app.state.scale_kg = state
 
@@ -333,6 +349,35 @@ def create_app(
             )
         except GrpcRpcError as err:
             return _grpc_error_response(err)
+
+    if enable_showcase:
+        from scale_kg.showcase.concurrency import ShowcaseService
+        from scale_kg.showcase.router import create_showcase_router
+
+        env_snapshot = os.environ.get("SCALE_KG_SHOWCASE_SNAPSHOT", "").strip()
+        resolved_snapshot = (
+            Path(showcase_snapshot_path)
+            if showcase_snapshot_path is not None
+            else (Path(env_snapshot) if env_snapshot else None)
+        )
+        history_path = (
+            resolved_snapshot.parent / "history.json"
+            if resolved_snapshot is not None
+            else None
+        )
+        showcase_service = ShowcaseService(
+            snapshot_path=resolved_snapshot,
+            history_path=history_path,
+            config=config,
+        )
+        app.state.showcase = showcase_service
+        app.include_router(
+            create_showcase_router(
+                showcase_service,
+                api_key=state.api_key,
+                require_auth=showcase_require_auth,
+            )
+        )
 
     return app
 
